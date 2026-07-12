@@ -1,0 +1,190 @@
+<!--
+============================================================================
+文件名: fragment_main.xml
+功能描述:
+  - 主界面布局
+  - 显示应用标题、连接状态、当前模式、风险等级
+  - 显示障碍物信息和行进建议
+  - 提供紧急停止、模式切换、语音控制大按钮
+  - 大字体（标题36sp，内容24sp）、高对比度，视障友好设计
+依赖关系:
+  - 被 MainFragment 加载
+  - 视图 ID 与 MainFragment.java 中 findViewById 对应
+============================================================================
+-->
+<ScrollView
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#FFFFFF"
+    android:fillViewport="true">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="16dp">
+
+        <!-- 应用标题（点击5次激活开发者模式） -->
+        <TextView
+            android:id="@+id/text_title"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="智慧导盲头环"
+            android:textSize="36sp"
+            android:textStyle="bold"
+            android:textColor="#1565C0"
+            android:gravity="center"
+            android:paddingTop="20dp"
+            android:paddingBottom="20dp"
+            android:clickable="true"
+            android:focusable="true" />
+
+        <!-- 连接状态卡片 -->
+        <androidx.cardview.widget.CardView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="12dp"
+            app:cardCornerRadius="12dp"
+            app:cardElevation="4dp"
+            app:cardBackgroundColor="#F5F5F5">
+
+            <TextView
+                android:id="@+id/text_connection_status"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="连接状态：未连接"
+                android:textSize="24sp"
+                android:textStyle="bold"
+                android:textColor="#F44336"
+                android:gravity="center"
+                android:padding="16dp" />
+
+        </androidx.cardview.widget.CardView>
+
+        <!-- 当前模式卡片 -->
+        <androidx.cardview.widget.CardView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="12dp"
+            app:cardCornerRadius="12dp"
+            app:cardElevation="4dp"
+            app:cardBackgroundColor="#E3F2FD">
+
+            <TextView
+                android:id="@+id/text_current_mode"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="当前模式：自动模式"
+                android:textSize="24sp"
+                android:textStyle="bold"
+                android:textColor="#0D47A1"
+                android:gravity="center"
+                android:padding="16dp" />
+
+        </androidx.cardview.widget.CardView>
+
+        <!-- 风险等级卡片（背景色动态变化） -->
+        <androidx.cardview.widget.CardView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="12dp"
+            app:cardCornerRadius="12dp"
+            app:cardElevation="6dp">
+
+            <TextView
+                android:id="@+id/text_risk_level"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="风险等级：安全"
+                android:textSize="28sp"
+                android:textStyle="bold"
+                android:textColor="#FFFFFF"
+                android:gravity="center"
+                android:background="#4CAF50"
+                android:padding="24dp" />
+
+        </androidx.cardview.widget.CardView>
+
+        <!-- 障碍物信息卡片 -->
+        <androidx.cardview.widget.CardView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="12dp"
+            app:cardCornerRadius="12dp"
+            app:cardElevation="4dp"
+            app:cardBackgroundColor="#FFF3E0">
+
+            <TextView
+                android:id="@+id/text_obstacle_info"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="障碍物：无"
+                android:textSize="22sp"
+                android:textColor="#E65100"
+                android:gravity="center"
+                android:padding="16dp" />
+
+        </androidx.cardview.widget.CardView>
+
+        <!-- 建议方向卡片 -->
+        <androidx.cardview.widget.CardView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="20dp"
+            app:cardCornerRadius="12dp"
+            app:cardElevation="4dp"
+            app:cardBackgroundColor="#E8F5E9">
+
+            <TextView
+                android:id="@+id/text_suggestion"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="建议：可安全前进"
+                android:textSize="22sp"
+                android:textStyle="bold"
+                android:textColor="#1B5E20"
+                android:gravity="center"
+                android:padding="16dp" />
+
+        </androidx.cardview.widget.CardView>
+
+        <!-- 紧急停止按钮（红色，醒目） -->
+        <Button
+            android:id="@+id/btn_emergency_stop"
+            android:layout_width="match_parent"
+            android:layout_height="80dp"
+            android:layout_marginBottom="12dp"
+            android:text="停止播报"
+            android:textSize="24sp"
+            android:textStyle="bold"
+            android:textColor="#FFFFFF"
+            android:backgroundTint="#D32F2F" />
+
+        <!-- 模式切换按钮 -->
+        <Button
+            android:id="@+id/btn_switch_mode"
+            android:layout_width="match_parent"
+            android:layout_height="70dp"
+            android:layout_marginBottom="12dp"
+            android:text="切换模式"
+            android:textSize="22sp"
+            android:textStyle="bold"
+            android:textColor="#FFFFFF"
+            android:backgroundTint="#1565C0" />
+
+        <!-- 语音控制按钮 -->
+        <Button
+            android:id="@+id/btn_voice_control"
+            android:layout_width="match_parent"
+            android:layout_height="70dp"
+            android:layout_marginBottom="12dp"
+            android:text="语音控制"
+            android:textSize="22sp"
+            android:textStyle="bold"
+            android:textColor="#FFFFFF"
+            android:backgroundTint="#7B1FA2" />
+
+    </LinearLayout>
+</ScrollView>

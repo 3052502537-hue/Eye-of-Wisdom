@@ -1,0 +1,31 @@
+# ============================================
+# 智慧之眼导盲头环 - Python工具链依赖
+# ============================================
+# 用于模型训练、数据预处理和辅助工具脚本
+# 安装: pip install -r requirements.txt
+
+# === TensorFlow Lite 模型训练与转换 ===
+tensorflow==2.15.0
+tflite-support==0.4.4
+
+# === 图像处理与数据增强 ===
+opencv-python==4.8.1.78
+Pillow==10.2.0
+albumentations==1.3.1
+
+# === 数据科学工具 ===
+numpy==1.26.3
+pandas==2.1.4
+matplotlib==3.8.2
+
+# === 目标检测模型工具 ===
+ultralytics==8.1.0  # YOLOv8 用于训练障碍物检测模型
+
+# === 模型转换工具 ===
+onnx==1.15.0
+onnx-tf==1.10.0
+
+# === 辅助工具 ===
+requests==2.31.0
+tqdm==4.66.1
+PyYAML==6.0.1

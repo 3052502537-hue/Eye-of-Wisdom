@@ -1,0 +1,67 @@
+<!--
+============================================================================
+文件名: AndroidManifest.xml
+功能描述:
+  - 声明应用所需的权限（网络、定位、录音、震动等）
+  - 注册 MainActivity 为启动入口
+  - 配置应用主题、硬件特性
+依赖关系:
+  - 依赖 MainActivity 作为应用入口
+  - 需要网络权限用于 TCP/UDP 通信
+  - 需要定位权限用于 GPS 定位
+  - 需要录音权限用于语音控制（可选功能）
+接口说明:
+  - 权限清单: INTERNET, ACCESS_NETWORK_STATE, ACCESS_FINE_LOCATION,
+    ACCESS_COARSE_LOCATION, RECORD_AUDIO, VIBRATE, FOREGROUND_SERVICE
+============================================================================
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- 网络通信权限（TCP接收传感器数据、UDP接收图像数据） -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
+
+    <!-- 定位权限（GPS定位功能） -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+
+    <!-- 录音权限（语音控制，可选功能） -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+
+    <!-- 震动权限（视障用户触觉反馈） -->
+    <uses-permission android:name="android.permission.VIBRATE" />
+
+    <!-- 前台服务权限（后台持续接收数据） -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+
+    <!-- 摄像头硬件特性（可选，用于扩展功能） -->
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+
+    <application
+        android:allowBackup="true"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.Material3.DayNight"
+        android:usesCleartextTraffic="true"
+        tools:targetApi="33">
+
+        <!-- 主 Activity，应用启动入口 -->
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:screenOrientation="portrait"
+            android:configChanges="orientation|screenSize|keyboardHidden">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+    </application>
+
+</manifest>

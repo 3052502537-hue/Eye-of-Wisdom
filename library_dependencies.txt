@@ -1,0 +1,34 @@
+# ============================================
+# 智慧之眼导盲头环 - Arduino 库依赖清单
+# ============================================
+# 在 Arduino IDE 中安装以下库（工具 → 管理库）
+# 或手动下载放入 libraries 目录
+
+# === ESP32 核心支持 ===
+# Arduino IDE → 开发板管理器 → 安装 "esp32 by Espressif Systems" (>=3.0.0)
+# 开发板选择: ESP32S3 Dev Module
+# 配置: USB CDC On Boot=Enabled, Flash Size=16MB, PSRAM=OPI 8MB
+
+# === 摄像头驱动 ===
+esp32-camera    # ESP32 摄像头驱动库（通过GitHub安装: espressif/esp32-camera）
+
+# === WS2812 RGB LED ===
+Adafruit_NeoPixel  # WS2812 RGB LED 控制（>=1.12.0）
+
+# === 毫米波雷达 ===
+ld2410          # LD2410 雷达库（可选，如使用LD2410）
+
+# === WiFi 和 Web 服务器 ===
+# ESP32 Arduino 核心已内置 WiFi.h, WebServer.h, WiFiAP.h
+# 无需额外安装
+
+# === SPI 通信 ===
+# ESP32 Arduino 核心已内置 SPI.h
+# 无需额外安装
+
+# === JSON 解析 ===
+ArduinoJson     # JSON 序列化/反序列化（>=7.0.0）
+
+# === FreeRTOS ===
+# ESP32 Arduino 核心已内置 FreeRTOS
+# 无需额外安装

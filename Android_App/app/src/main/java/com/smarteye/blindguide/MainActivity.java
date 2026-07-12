@@ -1,0 +1,397 @@
+/**
+ * ============================================================================
+ * 文件名: MainActivity.java
+ * 功能描述:
+ *   - 应用主 Activity，承载底部导航和 Fragment 切换
+ *   - 初始化网络通信（TCP/UDP）、TTS、TFLite、避障分析器等核心组件
+ *   - 管理 Activity 生命周期，统一释放资源
+ *   - 处理权限申请（定位、录音等）
+ *   - 提供调试模式激活入口（连续点击标题5次）
+ * 依赖关系:
+ *   - 依赖 TCPClient、UDPReceiver 网络通信
+ *   - 依赖 TTSManager 语音播报
+ *   - 依赖 TFLiteClassifier 视觉识别
+ *   - 依赖 ObstacleAnalyzer 避障决策
+ *   - 依赖 MainFragment、SettingsFragment、DebugFragment 三个页面
+ * 接口说明:
+ *   - getTcpClient(): 获取 TCP 客户端实例
+ *   - getUdpReceiver(): 获取 UDP 接收器实例
+ *   - getAnalyzer(): 获取避障分析器实例
+ *   - getClassifier(): 获取 TFLite 分类器实例
+ *   - showDebugFragment(): 显示调试页面（开发者模式）
+ * ============================================================================
+ */
+package com.smarteye.blindguide;
+
+import android.Manifest;
+import android.content.pm.PackageManager;
+import android.os.Build;
+import android.os.Bundle;
+import android.util.Log;
+import android.view.View;
+import android.widget.Toast;
+
+import androidx.activity.result.ActivityResultLauncher;
+import androidx.activity.result.contract.ActivityResultContracts;
+import androidx.annotation.NonNull;
+import androidx.appcompat.app.AppCompatActivity;
+import androidx.fragment.app.Fragment;
+import androidx.fragment.app.FragmentManager;
+import androidx.fragment.app.FragmentTransaction;
+
+import com.google.android.material.bottomnavigation.BottomNavigationView;
+import com.google.android.material.navigation.NavigationBarView;
+import com.smarteye.blindguide.ai.TFLiteClassifier;
+import com.smarteye.blindguide.data.AppConfig;
+import com.smarteye.blindguide.logic.ObstacleAnalyzer;
+import com.smarteye.blindguide.network.TCPClient;
+import com.smarteye.blindguide.network.UDPReceiver;
+import com.smarteye.blindguide.tts.TTSManager;
+import com.smarteye.blindguide.ui.DebugFragment;
+import com.smarteye.blindguide.ui.MainFragment;
+import com.smarteye.blindguide.ui.SettingsFragment;
+import com.smarteye.blindguide.voice.VoiceControl;
+
+/**
+ * 应用主 Activity
+ * 管理 Fragment 切换和核心组件生命周期
+ */
+public class MainActivity extends AppCompatActivity {
+
+    private static final String TAG = "MainActivity";
+
+    /** Fragment 标签 */
+    private static final String TAG_MAIN = "main";
+    private static final String TAG_SETTINGS = "settings";
+    private static final String TAG_DEBUG = "debug";
+
+    /** 底部导航视图 */
+    private BottomNavigationView bottomNav;
+
+    /** 核心组件 */
+    private TCPClient tcpClient;
+    private UDPReceiver udpReceiver;
+    private TFLiteClassifier classifier;
+    private ObstacleAnalyzer analyzer;
+    private VoiceControl voiceControl;
+
+    /** 当前显示的 Fragment */
+    private Fragment currentFragment;
+
+    /** 标题点击计数（调试模式激活） */
+    private int titleClickCount = 0;
+
+    /** 标题上次点击时间 */
+    private long lastTitleClickTime = 0;
+
+    /** 权限请求启动器 */
+    private ActivityResultLauncher<String[]> permissionLauncher;
+
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        setContentView(R.layout.activity_main);
+
+        // 初始化视图
+        initViews();
+
+        // 初始化权限请求
+        initPermissionLauncher();
+
+        // 初始化核心组件
+        initCoreComponents();
+
+        // 请求必要权限
+        requestNecessaryPermissions();
+
+        // 默认显示主界面
+        if (savedInstanceState == null) {
+            switchFragment(TAG_MAIN);
+        }
+    }
+
+    /**
+     * 初始化视图
+     */
+    private void initViews() {
+        bottomNav = findViewById(R.id.bottom_navigation);
+
+        // 底部导航项点击监听
+        bottomNav.setOnItemSelectedListener(item -> {
+            int itemId = item.getItemId();
+            if (itemId == R.id.nav_main) {
+                switchFragment(TAG_MAIN);
+                return true;
+            } else if (itemId == R.id.nav_settings) {
+                switchFragment(TAG_SETTINGS);
+                return true;
+            } else if (itemId == R.id.nav_debug) {
+                // 调试页仅在激活开发者模式后可见
+                if (AppConfig.getInstance().isDebugModeActivated()) {
+                    switchFragment(TAG_DEBUG);
+                    return true;
+                } else {
+                    Toast.makeText(this, "开发者模式未激活", Toast.LENGTH_SHORT).show();
+                    return false;
+                }
+            }
+            return false;
+        });
+
+        // 默认隐藏调试页导航项
+        updateDebugNavVisibility();
+    }
+
+    /**
+     * 初始化权限请求启动器
+     */
+    private void initPermissionLauncher() {
+        permissionLauncher = registerForActivityResult(
+                new ActivityResultContracts.RequestMultiplePermissions(),
+                result -> {
+                    Boolean locationGranted = result.get(Manifest.permission.ACCESS_FINE_LOCATION);
+                    Boolean audioGranted = result.get(Manifest.permission.RECORD_AUDIO);
+
+                    if (locationGranted != null && locationGranted) {
+                        Log.i(TAG, "定位权限已授予");
+                    }
+                    if (audioGranted != null && audioGranted) {
+                        Log.i(TAG, "录音权限已授予");
+                    }
+                });
+    }
+
+    /**
+     * 初始化核心组件
+     */
+    private void initCoreComponents() {
+        // 初始化 TTS
+        TTSManager.getInstance().initialize(this);
+
+        // 初始化 TCP 客户端
+        tcpClient = new TCPClient();
+
+        // 初始化 UDP 接收器
+        udpReceiver = new UDPReceiver();
+
+        // 初始化 TFLite 分类器
+        classifier = new TFLiteClassifier();
+        classifier.initialize(this);
+
+        // 初始化避障分析器
+        analyzer = new ObstacleAnalyzer();
+        analyzer.setMode(AppConfig.getInstance().getCurrentMode());
+
+        // 初始化语音控制（可选）
+        voiceControl = new VoiceControl();
+        voiceControl.initialize(this);
+
+        // 设置 TCP 数据回调
+        tcpClient.setOnSensorDataListener(new TCPClient.OnSensorDataListener() {
+            @Override
+            public void onSensorData(Protocol.SensorData data) {
+                // 更新避障分析器
+                analyzer.updateSensorData(data);
+            }
+
+            @Override
+            public void onRawData(String rawJson) {
+                // 调试用：原始数据回调
+                Log.d(TAG, "TCP原始数据: " + rawJson);
+            }
+        });
+
+        // 设置 UDP 图像回调
+        udpReceiver.setOnImageFrameListener(frame -> {
+            // 调用 TFLite 进行视觉识别
+            if (AppConfig.getInstance().isVisionEnabled() && classifier.isInitialized()) {
+                classifier.classify(frame.jpegData, result -> {
+                    // 更新避障分析器
+                    analyzer.updateVisionResult(result);
+                });
+            }
+        });
+    }
+
+    /**
+     * 请求必要权限
+     */
+    private void requestNecessaryPermissions() {
+        String[] permissions = {
+                Manifest.permission.ACCESS_FINE_LOCATION,
+                Manifest.permission.ACCESS_COARSE_LOCATION,
+                Manifest.permission.RECORD_AUDIO
+        };
+        permissionLauncher.launch(permissions);
+    }
+
+    /**
+     * 切换 Fragment
+     * @param tag Fragment 标签
+     */
+    private void switchFragment(String tag) {
+        FragmentManager fm = getSupportFragmentManager();
+        FragmentTransaction transaction = fm.beginTransaction();
+
+        // 隐藏当前 Fragment
+        if (currentFragment != null) {
+            transaction.hide(currentFragment);
+        }
+
+        // 查找或创建目标 Fragment
+        Fragment targetFragment = fm.findFragmentByTag(tag);
+        if (targetFragment == null) {
+            targetFragment = createFragment(tag);
+            if (targetFragment != null) {
+                transaction.add(R.id.fragment_container, targetFragment, tag);
+            }
+        } else {
+            transaction.show(targetFragment);
+        }
+
+        currentFragment = targetFragment;
+        transaction.commitAllowingStateLoss();
+    }
+
+    /**
+     * 根据 tag 创建 Fragment
+     * @param tag Fragment 标签
+     * @return Fragment 实例
+     */
+    private Fragment createFragment(String tag) {
+        switch (tag) {
+            case TAG_MAIN:
+                return new MainFragment();
+            case TAG_SETTINGS:
+                return new SettingsFragment();
+            case TAG_DEBUG:
+                return new DebugFragment();
+            default:
+                return null;
+        }
+    }
+
+    /**
+     * 更新调试导航项可见性
+     */
+    private void updateDebugNavVisibility() {
+        if (bottomNav.getMenu().findItem(R.id.nav_debug) != null) {
+            bottomNav.getMenu().findItem(R.id.nav_debug)
+                    .setVisible(AppConfig.getInstance().isDebugModeActivated());
+        }
+    }
+
+    /**
+     * 激活调试模式
+     * 连续点击主界面标题5次
+     */
+    public void onTitleClick() {
+        long now = System.currentTimeMillis();
+        if (now - lastTitleClickTime > 2000) {
+            // 超过2秒重置计数
+            titleClickCount = 0;
+        }
+        titleClickCount++;
+        lastTitleClickTime = now;
+
+        if (titleClickCount >= AppConfig.DEBUG_ACTIVATE_CLICK_COUNT) {
+            AppConfig.getInstance().setDebugModeActivated(true);
+            updateDebugNavVisibility();
+            Toast.makeText(this, "开发者模式已激活", Toast.LENGTH_SHORT).show();
+            TTSManager.getInstance().speak("开发者模式已激活", TTSManager.PRIORITY_MEDIUM);
+            titleClickCount = 0;
+        }
+    }
+
+    // ==================== Getter 方法（供 Fragment 访问）====================
+
+    /**
+     * 获取 TCP 客户端实例
+     * @return TCPClient 实例
+     */
+    public TCPClient getTcpClient() {
+        return tcpClient;
+    }
+
+    /**
+     * 获取 UDP 接收器实例
+     * @return UDPReceiver 实例
+     */
+    public UDPReceiver getUdpReceiver() {
+        return udpReceiver;
+    }
+
+    /**
+     * 获取避障分析器实例
+     * @return ObstacleAnalyzer 实例
+     */
+    public ObstacleAnalyzer getAnalyzer() {
+        return analyzer;
+    }
+
+    /**
+     * 获取 TFLite 分类器实例
+     * @return TFLiteClassifier 实例
+     */
+    public TFLiteClassifier getClassifier() {
+        return classifier;
+    }
+
+    /**
+     * 获取语音控制实例
+     * @return VoiceControl 实例
+     */
+    public VoiceControl getVoiceControl() {
+        return voiceControl;
+    }
+
+    /**
+     * 显示调试 Fragment
+     */
+    public void showDebugFragment() {
+        bottomNav.setSelectedItemId(R.id.nav_debug);
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        // 启动网络通信
+        if (tcpClient != null) {
+            tcpClient.connect();
+        }
+        if (udpReceiver != null) {
+            udpReceiver.startReceive();
+        }
+    }
+
+    @Override
+    protected void onPause() {
+        super.onPause();
+        // 暂停网络通信，节省电量
+        if (tcpClient != null) {
+            tcpClient.disconnect();
+        }
+        if (udpReceiver != null) {
+            udpReceiver.stopReceive();
+        }
+    }
+
+    @Override
+    protected void onDestroy() {
+        super.onDestroy();
+        // 释放所有资源
+        if (tcpClient != null) {
+            tcpClient.disconnect();
+        }
+        if (udpReceiver != null) {
+            udpReceiver.stopReceive();
+        }
+        if (classifier != null) {
+            classifier.release();
+        }
+        if (voiceControl != null) {
+            voiceControl.release();
+        }
+        TTSManager.getInstance().release();
+    }
+}

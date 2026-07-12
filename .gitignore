@@ -1,13 +1,87 @@
-node_modules/
-.DS_Store
-dist/
+# ============================================
+# 智慧之眼导盲头环项目 .gitignore
+# ============================================
+
+# === 构建输出 ===
 build/
-.env
-.env.local
-*.log
-.vscode/
+dist/
+*.o
+*.elf
+*.bin
+*.hex
+*.map
+*.lst
+
+# === Arduino IDE ===
+*.hex
+*.eep
+*.elf
+*.map
+build/
+
+# === PlatformIO ===
+.pio/
+.pioenvs/
+.piolibdeps/
+platformio.ini.user
+
+# === Android Studio / Gradle ===
+.gradle/
+local.properties
+*.iml
 .idea/
+app/build/
+*.apk
+*.aab
+*.ap_
+*.dex
+captures/
+.cxx/
+
+# === Python ===
 __pycache__/
 *.pyc
+*.pyo
+.venv/
+venv/
+
+# === Node.js ===
+node_modules/
 .next/
-coverage/
+.npm/
+
+# === IDE ===
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# === 系统文件 ===
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# === 环境变量和密钥 ===
+.env
+.env.local
+*.key
+*.pem
+secrets.h
+
+# === 日志 ===
+*.log
+logs/
+
+# === 模型文件（体积大，不纳入版本控制）===
+*.tflite
+*.onnx
+*.pb
+*.h5
+*.keras
+
+# === 文档临时文件 ===
+~$*.docx
+~$*.xlsx
+~$*.pptx
+*.tmp

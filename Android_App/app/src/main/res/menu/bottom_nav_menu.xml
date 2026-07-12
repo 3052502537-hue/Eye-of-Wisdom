@@ -1,0 +1,35 @@
+<!--
+============================================================================
+文件名: bottom_nav_menu.xml
+功能描述:
+  - 底部导航栏菜单资源
+  - 三个导航项：主界面、设置、调试
+  - 调试项默认隐藏，开发者模式激活后可见
+  - 视障友好：大图标 + 文字标签
+依赖关系:
+  - 被 activity_main.xml 中的 BottomNavigationView 引用
+  - 菜单项 ID 被 MainActivity.java 引用（nav_main / nav_settings / nav_debug）
+============================================================================
+-->
+<menu xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- 主界面导航项 -->
+    <item
+        android:id="@+id/nav_main"
+        android:icon="@android:drawable/ic_menu_view"
+        android:title="主界面" />
+
+    <!-- 设置导航项 -->
+    <item
+        android:id="@+id/nav_settings"
+        android:icon="@android:drawable/ic_menu_preferences"
+        android:title="设置" />
+
+    <!-- 调试导航项（默认隐藏，开发者模式激活后可见） -->
+    <item
+        android:id="@+id/nav_debug"
+        android:icon="@android:drawable/ic_menu_manage"
+        android:title="调试"
+        android:visible="false" />
+
+</menu>

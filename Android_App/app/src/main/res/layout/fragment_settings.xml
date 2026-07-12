@@ -1,0 +1,258 @@
+<!--
+============================================================================
+文件名: fragment_settings.xml
+功能描述:
+  - 设置页面布局
+  - 模式切换按钮组（传感器/自动/风险播报）
+  - TTS 语速调节 SeekBar + 测试按钮
+  - 距离阈值调节 SeekBar（危险距离、注意距离）
+  - WiFi 配置输入框（SSID、密码）
+  - 功能开关（GPS、视觉识别、震动反馈、语音控制）
+  - 大字体、大按钮，视障友好设计
+依赖关系:
+  - 被 SettingsFragment 加载
+  - 视图 ID 与 SettingsFragment.java 中 findViewById 对应
+============================================================================
+-->
+<ScrollView
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#FFFFFF"
+    android:fillViewport="true">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="16dp">
+
+        <!-- 页面标题 -->
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="设置"
+            android:textSize="32sp"
+            android:textStyle="bold"
+            android:textColor="#1565C0"
+            android:gravity="center"
+            android:paddingTop="16dp"
+            android:paddingBottom="20dp" />
+
+        <!-- ==================== 模式切换 ==================== -->
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="工作模式"
+            android:textSize="22sp"
+            android:textStyle="bold"
+            android:textColor="#212121"
+            android:paddingBottom="8dp" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:layout_marginBottom="16dp">
+
+            <Button
+                android:id="@+id/btn_mode_sensor"
+                android:layout_width="0dp"
+                android:layout_height="70dp"
+                android:layout_weight="1"
+                android:text="传感器"
+                android:textSize="16sp"
+                android:textColor="#FFFFFF"
+                android:backgroundTint="#5C6BC0" />
+
+            <Button
+                android:id="@+id/btn_mode_auto"
+                android:layout_width="0dp"
+                android:layout_height="70dp"
+                android:layout_weight="1"
+                android:layout_marginStart="8dp"
+                android:text="自动"
+                android:textSize="16sp"
+                android:textColor="#FFFFFF"
+                android:backgroundTint="#5C6BC0" />
+
+            <Button
+                android:id="@+id/btn_mode_risk"
+                android:layout_width="0dp"
+                android:layout_height="70dp"
+                android:layout_weight="1"
+                android:layout_marginStart="8dp"
+                android:text="风险播报"
+                android:textSize="16sp"
+                android:textColor="#FFFFFF"
+                android:backgroundTint="#5C6BC0" />
+
+        </LinearLayout>
+
+        <!-- ==================== 语音播报设置 ==================== -->
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="语音播报"
+            android:textSize="22sp"
+            android:textStyle="bold"
+            android:textColor="#212121"
+            android:paddingBottom="8dp" />
+
+        <TextView
+            android:id="@+id/text_tts_rate_value"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="语速：1.0"
+            android:textSize="18sp"
+            android:textColor="#424242"
+            android:paddingBottom="4dp" />
+
+        <SeekBar
+            android:id="@+id/seekbar_tts_rate"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:max="100"
+            android:progress="33" />
+
+        <Button
+            android:id="@+id/btn_test_tts"
+            android:layout_width="match_parent"
+            android:layout_height="60dp"
+            android:layout_marginBottom="16dp"
+            android:text="测试语音"
+            android:textSize="18sp"
+            android:textColor="#FFFFFF"
+            android:backgroundTint="#1565C0" />
+
+        <!-- ==================== 传感器参数 ==================== -->
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="传感器参数"
+            android:textSize="22sp"
+            android:textStyle="bold"
+            android:textColor="#212121"
+            android:paddingBottom="8dp" />
+
+        <TextView
+            android:id="@+id/text_danger_dist_value"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="危险距离：1.0米"
+            android:textSize="18sp"
+            android:textColor="#D32F2F"
+            android:paddingBottom="4dp" />
+
+        <SeekBar
+            android:id="@+id/seekbar_danger_dist"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:max="100"
+            android:progress="5" />
+
+        <TextView
+            android:id="@+id/text_caution_dist_value"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="注意距离：2.5米"
+            android:textSize="18sp"
+            android:textColor="#FF8F00"
+            android:paddingTop="8dp"
+            android:paddingBottom="4dp" />
+
+        <SeekBar
+            android:id="@+id/seekbar_caution_dist"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:max="100"
+            android:progress="15"
+            android:layout_marginBottom="16dp" />
+
+        <!-- ==================== WiFi 配置 ==================== -->
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="WiFi 配置"
+            android:textSize="22sp"
+            android:textStyle="bold"
+            android:textColor="#212121"
+            android:paddingBottom="8dp" />
+
+        <EditText
+            android:id="@+id/edit_wifi_ssid"
+            android:layout_width="match_parent"
+            android:layout_height="60dp"
+            android:hint="WiFi 名称（SSID）"
+            android:textSize="18sp"
+            android:inputType="text"
+            android:background="@android:drawable/editbox_background"
+            android:padding="12dp"
+            android:layout_marginBottom="8dp" />
+
+        <EditText
+            android:id="@+id/edit_wifi_password"
+            android:layout_width="match_parent"
+            android:layout_height="60dp"
+            android:hint="WiFi 密码"
+            android:textSize="18sp"
+            android:inputType="textPassword"
+            android:background="@android:drawable/editbox_background"
+            android:padding="12dp"
+            android:layout_marginBottom="8dp" />
+
+        <Button
+            android:id="@+id/btn_save_wifi"
+            android:layout_width="match_parent"
+            android:layout_height="60dp"
+            android:layout_marginBottom="16dp"
+            android:text="保存 WiFi 配置"
+            android:textSize="18sp"
+            android:textColor="#FFFFFF"
+            android:backgroundTint="#1565C0" />
+
+        <!-- ==================== 功能开关 ==================== -->
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="功能开关"
+            android:textSize="22sp"
+            android:textStyle="bold"
+            android:textColor="#212121"
+            android:paddingBottom="8dp" />
+
+        <Switch
+            android:id="@+id/switch_gps"
+            android:layout_width="match_parent"
+            android:layout_height="60dp"
+            android:text="GPS 定位"
+            android:textSize="20sp"
+            android:padding="8dp" />
+
+        <Switch
+            android:id="@+id/switch_vision"
+            android:layout_width="match_parent"
+            android:layout_height="60dp"
+            android:text="视觉识别"
+            android:textSize="20sp"
+            android:padding="8dp" />
+
+        <Switch
+            android:id="@+id/switch_vibration"
+            android:layout_width="match_parent"
+            android:layout_height="60dp"
+            android:text="震动反馈"
+            android:textSize="20sp"
+            android:padding="8dp" />
+
+        <Switch
+            android:id="@+id/switch_voice_control"
+            android:layout_width="match_parent"
+            android:layout_height="60dp"
+            android:text="语音控制"
+            android:textSize="20sp"
+            android:padding="8dp" />
+
+    </LinearLayout>
+</ScrollView>
