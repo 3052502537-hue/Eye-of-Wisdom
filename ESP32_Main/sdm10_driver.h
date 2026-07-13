@@ -1,18 +1,19 @@
 /* ============================================================
  * 文件名: sdm10_driver.h
  * 功能描述: SDM10 激光测距传感器驱动头文件
- *           SDM10 为 UART 接口激光测距模块，量程22m，精度±1cm，5V供电
- *           支持单次/连续测距，本驱动采用被动查询方式读取距离
+ *           UART接口, 量程10m(标准版), 精度±5cm(<5m)/1%(≥5m), 5V供电
+ *           上电自动连续输出(50Hz), 无需主动查询
  * 依赖关系: Arduino Serial1(UART1)、config.h、protocol.h
  * 接口说明:
  *   SDM10Driver()        - 构造函数
- *   begin()              - 初始化UART及传感器
+ *   begin()              - 初始化UART(460800bps 8N1)
  *   readDistance()       - 读取一次距离(m)
  *   selfTest()           - 传感器自检
  *   isOnline()           - 查询在线状态
  *
- * 注意: SDM10 具体帧格式需以厂家协议手册为准，本驱动提供框架
- *       并预留 parseFrame() 供按手册填充实际解析逻辑
+ * 协议: [0x5C][DIST_L][DIST_H][CHK_SUM] 4字节, 距离16位LE(mm)
+ *       校验: ~(DIST_L + DIST_H)
+ * 来源: SDM10 数据手册 V2.0 (siman.asia)
  * ============================================================ */
 
 #ifndef SDM10_DRIVER_H
@@ -86,9 +87,6 @@ private:
      * 返回: true=找到, false=未找到
      * -------------------------------------------------------- */
     bool findFrameHeader(const uint8_t* data, size_t len, size_t* outOffset);
-
-    /* 发送查询命令（若传感器为被动查询模式） */
-    bool sendQueryCmd();
 
     bool    _online;        // 在线状态
     bool    _initialized;   // 初始化标志

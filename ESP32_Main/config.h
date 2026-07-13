@@ -46,26 +46,31 @@
  * ============================================================ */
 
 /* 前向 SDM10 激光测距 —— UART1
- * 量程22m，精度±1cm，5V供电，UART输出 */
+ * 量程10m(SDM10标准版, V2.0数据手册)，精度±5cm(<5m)/1%(≥5m)，5V供电，UART输出
+ * 协议: 帧头0x5C + 距离2B LE(mm) + 校验和(~(DIST_L+DIST_H)) = 4字节, 波特率460800
+ * 输出模式: 上电自动连续输出 50Hz
+ * 用户确认: 使用标准版SDM10(非长距版) */
 #define PIN_SDM10_RX               17        // ESP32 TX -> SDM10 RX
 #define PIN_SDM10_TX               18        // SDM10 TX  -> ESP32 RX
 #define SDM10_UART                 Serial1   // Arduino: Serial1 对应 UART1
-#define SDM10_BAUDRATE             115200    // SDM10 默认波特率
-#define SDM10_MAX_RANGE_CM         2200      // 最大量程 22m = 2200cm
+#define SDM10_BAUDRATE             460800    // SDM10 默认波特率(出厂460800)
+#define SDM10_MAX_RANGE_CM         1000      // 最大量程 10m = 1000cm(标准版,90%反射率)
 #define SDM10_INVALID_DISTANCE     (-1.0f)   // 无效距离标识
 
 /* 前向 RD-03D 毫米波雷达 —— UART2
- * 支持测距/测角/测速，多目标 */
+ * 24GHz FMCW, 检测运动目标, 距离0.5-8m, 角度±60°, 最多3目标
+ * 协议: 256000bps 8N1, 连续二进制输出 X/Y/Speed */
 #define PIN_RADAR_FRONT_RX         19        // ESP32 TX -> 雷达 RX
 #define PIN_RADAR_FRONT_TX         20        // 雷达 TX  -> ESP32 RX
 #define RADAR_FRONT_UART           Serial2   // Arduino: Serial2 对应 UART2
-#define RADAR_BAUDRATE             115200    // RD-03D 默认波特率
-#define RADAR_MAX_TARGETS          8         // 单帧最多目标数
+#define RADAR_BAUDRATE             256000    // RD-03D 默认波特率(实测256000)
+#define RADAR_MAX_TARGETS          3         // 单帧最多目标数(实测3目标)
 
 /* 后向 RD-03D 毫米波雷达 —— UART0
  * 因为调试口走 USB CDC，UART0(GPIO43/44) 被释放用于后雷达
  * 注意: 必须在 Arduino IDE 开启 "USB CDC On Boot"，否则
- *       Serial0 会与默认调试串口冲突 */
+ *       Serial0 会与默认调试串口冲突
+ * 协议同前雷达: 256000bps 8N1 */
 #define PIN_RADAR_REAR_RX          43        // ESP32 TX -> 雷达 RX
 #define PIN_RADAR_REAR_TX          44        // 雷达 TX  -> ESP32 RX
 #define RADAR_REAR_UART            Serial0   // Arduino: Serial0 对应 UART0
