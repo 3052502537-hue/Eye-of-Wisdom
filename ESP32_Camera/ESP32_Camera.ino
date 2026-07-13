@@ -68,13 +68,14 @@ static TaskHandle_t  g_taskHeartbeat  = NULL; /* 心跳任务 */
 /* ============================================================
  *  帧数据传输结构体
  *    用于在采集任务和发送任务之间传递帧信息
+ *    自带数据缓冲区，避免 use-after-free
  * ============================================================ */
 typedef struct {
-    uint8_t*  data;       /* 图像数据指针 */
-    uint32_t  size;       /* 数据大小 */
-    uint16_t  width;      /* 图像宽度 */
-    uint16_t  height;     /* 图像高度 */
-    uint8_t   format;     /* 图像格式 */
+    uint8_t   data[JPEG_MAX_SIZE];  /* 图像数据缓冲区(拷贝) */
+    uint32_t  size;                 /* 数据大小 */
+    uint16_t  width;                /* 图像宽度 */
+    uint16_t  height;               /* 图像高度 */
+    uint8_t   format;               /* 图像格式 */
 } TransferFrame_t;
 
 /* 帧传输队列 */
@@ -112,26 +113,29 @@ static void taskCameraCapture(void* arg)
          * 当前框架直接使用原始 JPEG 数据
          */
 
-        /* --- 准备传输帧 --- */
+        /* --- 准备传输帧(拷贝数据, 避免 use-after-free) --- */
         TransferFrame_t frame;
-        frame.data   = fb->buf;                           /* JPEG 数据指针 */
-        frame.size   = fb->len;                           /* JPEG 数据大小 */
-        frame.width  = fb->width;                         /* 图像宽度 */
-        frame.height = fb->height;                        /* 图像高度 */
-        frame.format = IMG_FMT_JPEG;                      /* JPEG 格式 */
+        memset(&frame, 0, sizeof(frame));
+
+        uint32_t copySize = fb->len;
+        if (copySize > JPEG_MAX_SIZE) {
+            copySize = JPEG_MAX_SIZE;  /* 截断超大数据 */
+        }
+        memcpy(frame.data, fb->buf, copySize);            /* 拷贝JPEG数据 */
+        frame.size   = copySize;
+        frame.width  = fb->width;
+        frame.height = fb->height;
+        frame.format = IMG_FMT_JPEG;
+
+        /* 立即释放摄像头帧缓冲(数据已拷贝到frame.data) */
+        g_camera.returnFrame(fb);
+        fb = NULL;
 
         /* 尝试放入发送队列 (非阻塞) */
         if (xQueueSend(g_frameQueue, &frame, 0) != pdTRUE) {
             /* 队列满，丢弃当前帧 */
             DBG_PRINTLN("[Task] 发送队列满，丢弃帧");
         }
-
-        /* 释放帧缓冲区 (数据已在队列中引用，实际发送时需确保数据有效) */
-        /* 注意: 此处直接释放可能导致发送任务访问已释放数据。
-         * 完整实现应在此处拷贝数据或使用双缓冲机制。
-         * 框架代码中通过帧队列传递指针，发送任务需在发送完成后处理。 */
-        g_camera.returnFrame(fb);
-        fb = NULL;
 
         /* --- 帧率控制 --- */
         /* 计算本次采集耗时，确保帧间隔满足目标帧率 */

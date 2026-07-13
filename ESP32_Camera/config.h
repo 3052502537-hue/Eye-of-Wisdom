@@ -111,8 +111,8 @@
  * ============================================================ */
 
 #define PIN_DATA_READY      38         /* 数据就绪通知引脚 (输出) */
-#define DATA_READY_ACTIVE   HIGH       /* 就绪信号有效电平 (高电平) */
-#define DATA_READY_IDLE     LOW        /* 就绪信号空闲电平 (低电平) */
+#define DATA_READY_ACTIVE   LOW        /* 就绪信号有效电平 (低电平, 与主控FALLING一致) */
+#define DATA_READY_IDLE     HIGH       /* 就绪信号空闲电平 (高电平) */
 
 /* ============================================================
  *  五、图像参数配置
@@ -135,8 +135,8 @@
 #define JPEG_MAX_SIZE         (60 * 1024)  /* JPEG 最大 60KB */
 
 /* ============================================================
- *  六、SPI 通信协议常量
- *    帧头尾标识、命令码、数据格式等
+ *  六、SPI 通信协议常量(与主控板 protocol.h 一致)
+ *    帧格式: |AA 55|cmd(1B)|len(2B LE)|data(NB)|CRC8(1B)|55 AA|
  * ============================================================ */
 
 #define SPI_FRAME_HEADER      0xAA55   /* 帧头 (2字节) */
@@ -144,19 +144,22 @@
 #define SPI_FRAME_HEADER_LEN  2        /* 帧头长度 */
 #define SPI_FRAME_TAIL_LEN    2        /* 帧尾长度 */
 #define SPI_FRAME_CMD_LEN     1        /* 命令字段长度 */
-#define SPI_FRAME_LEN_LEN     4        /* 数据长度字段 (4字节，支持大帧) */
+#define SPI_FRAME_LEN_LEN     2        /* 数据长度字段 (2字节小端, 与主控一致) */
 #define SPI_FRAME_CRC_LEN     1        /* CRC 校验长度 */
-/* 帧开销 = 帧头 + 命令 + 长度 + CRC + 帧尾 */
+/* 帧开销 = 帧头 + 命令 + 长度 + CRC + 帧尾 = 8字节 */
 #define SPI_FRAME_OVERHEAD    (SPI_FRAME_HEADER_LEN + SPI_FRAME_CMD_LEN + \
                                SPI_FRAME_LEN_LEN + SPI_FRAME_CRC_LEN + SPI_FRAME_TAIL_LEN)
 
-/* SPI 命令码定义 */
-#define SPI_CMD_IMG_FRAME       0x01   /* 图像帧数据 */
-#define SPI_CMD_HEARTBEAT       0x02   /* 心跳信号 */
-#define SPI_CMD_ACK             0x03   /* 应答信号 */
-#define SPI_CMD_SET_RESOLUTION  0x10   /* 设置分辨率 (主控下发) */
-#define SPI_CMD_SET_FPS         0x11   /* 设置帧率 (主控下发) */
-#define SPI_CMD_SET_QUALITY     0x12   /* 设置JPEG质量 (主控下发) */
+/* SPI 命令码定义(与主控板 protocol.h SpiCommand_t 一致) */
+#define SPI_CMD_IMG_FRAME_START   0x01   /* 图像帧起始(元数据) */
+#define SPI_CMD_IMG_FRAME_DATA    0x02   /* 图像帧数据块 */
+#define SPI_CMD_IMG_FRAME_END     0x03   /* 图像帧结束 */
+#define SPI_CMD_SET_RESOLUTION    0x10   /* 设置分辨率 (主控下发) */
+#define SPI_CMD_SET_FPS           0x11   /* 设置帧率 (主控下发) */
+#define SPI_CMD_SET_QUALITY       0x12   /* 设置JPEG质量 (主控下发) */
+#define SPI_CMD_ACK               0x20   /* 应答 */
+#define SPI_CMD_NACK              0x21   /* 否定应答 */
+#define SPI_CMD_HEARTBEAT         0x30   /* 心跳信号 */
 
 /* 图像格式标识 */
 #define IMG_FMT_JPEG          2        /* JPEG 格式 */

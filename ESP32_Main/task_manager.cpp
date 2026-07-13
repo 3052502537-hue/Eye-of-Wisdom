@@ -32,7 +32,7 @@ static TaskManager* g_tm = nullptr;
 TaskManager::TaskManager()
     : _hSensor(nullptr), _hSpi(nullptr), _hWifi(nullptr),
       _hDecision(nullptr), _hWeb(nullptr), _mutex(nullptr),
-      _workMode(MODE_NORMAL), _tasksRunning(false)
+      _workMode(MODE_AUTO), _tasksRunning(false)
 {
     memset(&_sensorFrame, 0, sizeof(_sensorFrame));
 }
@@ -166,7 +166,7 @@ bool TaskManager::getSensorFrame(SensorFrame_t* outFrame)
     return false;
 }
 
-/* evaluateDanger - 危险等级判断 */
+/* evaluateDanger - 危险等级判断(3级: SAFE/CAUTION/DANGER, 与APP一致) */
 DangerLevel_t TaskManager::evaluateDanger(const SensorFrame_t* frame)
 {
     if (!frame) return LEVEL_SAFE;
@@ -183,11 +183,10 @@ DangerLevel_t TaskManager::evaluateDanger(const SensorFrame_t* frame)
         }
     }
 
-    /* 按阈值判断等级 */
-    if (minDist < WARN_DISTANCE_DANGER)    return LEVEL_DANGER;
-    if (minDist < WARN_DISTANCE_WARNING)   return LEVEL_WARNING;
-    if (minDist < WARN_DISTANCE_ATTENTION) return LEVEL_ATTENTION;
-    return LEVEL_SAFE;
+    /* 按阈值判断等级(3级, 与APP AppConfig.java 一致) */
+    if (minDist < WARN_DISTANCE_DANGER)    return LEVEL_DANGER;   // < 1.0m
+    if (minDist < WARN_DISTANCE_ATTENTION) return LEVEL_CAUTION;  // < 3.0m
+    return LEVEL_SAFE;                                             // > 3.0m
 }
 
 /* ============================================================
@@ -276,21 +275,33 @@ void TaskManager::taskWifi(void* arg)
         if (self->_wifi.isClientConnected()) {
             SensorFrame_t f;
             if (self->getSensorFrame(&f)) {
-                /* 组装JSON字符串 */
+                /* 取最近雷达目标(用于APP端融合) */
+                RadarTarget_t ft = {0};
+                RadarTarget_t rt = {0};
+                if (f.radarFront.valid && f.radarFront.count > 0) {
+                    ft = f.radarFront.targets[0];
+                }
+                if (f.radarRear.valid && f.radarRear.count > 0) {
+                    rt = f.radarRear.targets[0];
+                }
+
+                /* 组装JSON(字段名与Android APP Protocol.java SensorData一致) */
                 int n = snprintf(jsonBuf, sizeof(jsonBuf),
                     "{\"type\":\"sensor\",\"ts\":%lu,"
-                    "\"laser\":{\"dist\":%.2f,\"valid\":%u},"
-                    "\"radar_f\":{\"count\":%u,\"valid\":%u},"
-                    "\"radar_r\":{\"count\":%u,\"valid\":%u},"
-                    "\"level\":%u,\"img\":%d}",
+                    "\"laser_front\":%.2f,"
+                    "\"radar_front\":{\"dist\":%.2f,\"speed\":%.2f,\"angle\":%.1f},"
+                    "\"radar_back\":{\"dist\":%.2f,\"speed\":%.2f,\"angle\":%.1f},"
+                    "\"battery\":%d,\"mode\":%d,\"level\":%u,\"img\":%d}",
                     (unsigned long)f.timestamp,
-                    f.laser.distance, f.laser.valid,
-                    f.radarFront.count, f.radarFront.valid,
-                    f.radarRear.count, f.radarRear.valid,
-                    f.level,
+                    f.laser.valid ? f.laser.distance : -1.0f,
+                    ft.distance, ft.speed, ft.angle,
+                    rt.distance, rt.speed, rt.angle,
+                    -1,   // battery: 暂未接入电量检测, -1表示未知
+                    (int)self->_workMode,
+                    (unsigned)f.level,
                     self->_spi.isFrameReady() ? 1 : 0);
 
-                if (n > 0) {
+                if (n > 0 && n < (int)sizeof(jsonBuf)) {
                     self->_wifi.sendSensorJson(jsonBuf, n);
                 }
             }
@@ -331,18 +342,20 @@ void TaskManager::taskDecision(void* arg)
                 dangerCount = 0;
             }
 
-            /* 更新共享帧中的等级 */
+            DangerLevel_t finalLevel = (dangerCount >= WARN_DEBOUNCE_FRAMES)
+                                       ? LEVEL_DANGER : level;
+
+            /* 更新共享帧中的等级(加锁) */
             if (xSemaphoreTake(self->_mutex, 5)) {
-                self->_sensorFrame.level = (dangerCount >= WARN_DEBOUNCE_FRAMES)
-                                           ? LEVEL_DANGER : level;
+                self->_sensorFrame.level = finalLevel;
                 xSemaphoreGive(self->_mutex);
             }
 
-            /* 控制报警 */
-            if (self->_sensorFrame.level >= LEVEL_DANGER) {
+            /* 控制报警(使用局部变量, 避免无锁访问共享数据) */
+            if (finalLevel >= LEVEL_DANGER) {
                 self->_alarm.setDangerAlarm(true);
                 self->_alarm.setSystemState(SYS_STATE_DANGER);
-            } else if (self->_sensorFrame.level == LEVEL_WARNING) {
+            } else if (finalLevel == LEVEL_CAUTION) {
                 self->_alarm.setDangerAlarm(false);
                 self->_alarm.setSystemState(SYS_STATE_WARNING);
             } else {

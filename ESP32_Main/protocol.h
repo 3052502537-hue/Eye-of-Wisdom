@@ -129,16 +129,16 @@ typedef struct {
  * {
  *   "type":"sensor",
  *   "ts":123456,                         // 时间戳(ms)
- *   "laser":{"dist":1.23,"valid":1},     // 前向激光距离(m)
- *   "radar_f":[                          // 前向雷达目标数组
- *     {"d":1.5,"v":0.8,"a":15.0},
- *     ...
- *   ],
- *   "radar_r":[                          // 后向雷达目标数组
- *     {"d":2.0,"v":-0.5,"a":-30.0},
- *     ...
- *   ],
- *   "level":0,                           // 危险等级 0安全/1注意/2警告/3危险
+ *   "laser_front":1.23,                  // 前向激光距离(m)，数值型
+ *   "radar_front":{                      // 前向雷达目标(最近目标)
+ *     "dist":1.5,"speed":0.8,"angle":15.0
+ *   },
+ *   "radar_back":{                       // 后向雷达目标(最近目标)
+ *     "dist":2.0,"speed":-0.5,"angle":-30.0
+ *   },
+ *   "battery":85,                        // 电池电量百分比
+ *   "mode":2,                            // 工作模式 1传感器/2自动/3风险
+ *   "level":0,                           // 危险等级 0安全/1注意/2危险
  *   "img":1                              // 是否有新图像帧(0/1)
  * }
  *
@@ -168,21 +168,19 @@ typedef enum {
     CMD_QUERY_STATUS   = 6,   // 查询状态
 } AppCommand_t;
 
-/* 工作模式枚举 */
+/* 工作模式枚举(与Android APP AppConfig.java 一致) */
 typedef enum {
-    MODE_NORMAL       = 0,   // 正常导盲模式（全传感器工作）
-    MODE_OUTDOOR      = 1,   // 室外模式（提高探测距离）
-    MODE_INDOOR       = 2,   // 室内模式（降低灵敏度，减少误报）
-    MODE_SLEEP        = 3,   // 省电模式（关闭摄像头，仅雷达工作）
+    MODE_SENSOR_ONLY  = 1,   // 传感器模式（仅传感器，低能耗）
+    MODE_AUTO         = 2,   // 自动模式（全传感器+视觉融合）
+    MODE_RISK_ONLY    = 3,   // 风险播报模式（仅播报风险等级）
     MODE_DEBUG        = 4,   // 调试模式（全量数据上报）
 } WorkMode_t;
 
-/* 危险等级枚举 */
+/* 危险等级枚举(与Android APP AppConfig.java 一致) */
 typedef enum {
     LEVEL_SAFE        = 0,   // 安全
-    LEVEL_ATTENTION   = 1,   // 注意
-    LEVEL_WARNING     = 2,   // 警告
-    LEVEL_DANGER      = 3,   // 危险（触发蜂鸣器）
+    LEVEL_CAUTION     = 1,   // 注意
+    LEVEL_DANGER      = 2,   // 危险（触发蜂鸣器）
 } DangerLevel_t;
 
 /* ============================================================

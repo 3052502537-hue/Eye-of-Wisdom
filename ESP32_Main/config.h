@@ -112,15 +112,15 @@
  * 五、WiFi AP 配置
  *    ESP32 作为 AP 热点，手机连接 ESP32 进行通信
  * ============================================================ */
-#define WIFI_AP_SSID               "BlindGuide_HeadRing"   // 热点名称
+#define WIFI_AP_SSID               "BlindGuide_AP"         // 热点名称(与Android APP一致)
 #define WIFI_AP_PASSWORD           "12345678"              // 密码(至少8位)
 #define WIFI_AP_CHANNEL            1                       // 信道
 #define WIFI_AP_MAX_CONNECTIONS    4                       // 最大连接数
 #define WIFI_AP_HIDDEN             false                   // 是否隐藏SSID
 
 /* 通信端口 */
-#define TCP_PORT                   8080     // TCP端口: 传感器JSON数据传输
-#define UDP_PORT                   9090     // UDP端口: 图像JPEG二进制传输
+#define TCP_PORT                   8888     // TCP端口: 传感器JSON数据传输(与Android APP一致)
+#define UDP_PORT                   8889     // UDP端口: 图像JPEG二进制传输(与Android APP一致)
 #define WEB_SERVER_PORT            80       // Web配置页面端口
 
 /* 客户端缓冲 */
@@ -133,7 +133,7 @@
  *    用于主控决策任务判断危险等级
  * ============================================================ */
 #define WARN_DISTANCE_ATTENTION    3.0f     // >此值: 安全
-#define WARN_DISTANCE_WARNING      2.0f     // <此值: 警告
+#define WARN_DISTANCE_WARNING      2.5f     // <此值: 警告(与Android APP DISTANCE_CAUTION一致)
 #define WARN_DISTANCE_DANGER       1.0f     // <此值: 危险（触发蜂鸣器）
 #define WARN_DEBOUNCE_FRAMES       3        // 连续N帧确认才触发预警
 

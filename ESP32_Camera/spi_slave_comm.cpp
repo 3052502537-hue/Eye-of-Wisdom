@@ -9,17 +9,18 @@
  *    - 数据就绪信号控制 (GPIO 通知主控板)
  *    - 接收主控板下发的指令并解析
  *
- *  通信协议帧格式:
+ *  通信协议帧格式(与主控板 protocol.h 一致):
  *    ┌────────┬──────┬──────────┬────────┬──────┬────────┐
  *    │ 帧头   │ 命令 │ 数据长度  │  数据  │ CRC  │ 帧尾   │
- *    │ 2字节  │ 1字节│ 4字节    │ N字节  │ 1字节│ 2字节  │
- *    │ 0xAA55 │      │ 大端序   │        │      │ 0x55AA │
+ *    │ 2字节  │ 1字节│ 2字节    │ N字节  │ 1字节│ 2字节  │
+ *    │ 0xAA55 │      │ 小端序   │        │      │ 0x55AA │
  *    └────────┴──────┴──────────┴────────┴──────┴────────┘
  *
- *  图像发送流程 (分块传输):
- *    1. 发送元数据帧 (宽/高/格式/总大小)
- *    2. 分块发送图像数据 (每块最大 SPI_MAX_TRANSFER - 协议开销)
- *    3. 每块传输: 构帧 → 拉高DATA_READY → 等待主控读取 → 拉低DATA_READY
+ *  图像发送流程 (3步协议, 与主控板 spi_master_comm.cpp handleFrame() 配合):
+ *    1. START帧(0x01): 发送元数据 (宽/高/格式/总大小)
+ *    2. DATA帧(0x02): 分块发送 (blockIndex+blockSize+数据)
+ *    3. END帧(0x03):   发送 totalBlocks
+ *    每步: 构帧 → 拉低DATA_READY → 等待主控SPI读取 → 拉高DATA_READY
  *
  *  依赖关系:
  *    - spi_slave_comm.h (本文件头文件)
@@ -160,8 +161,11 @@ bool SpiSlaveComm::init(void)
 }
 
 /* ============================================================
- *  发送一帧图像数据给主控板
- *  分块发送: 先发元数据，再发图像数据
+ *  发送一帧图像数据给主控板(3步协议: START→DATA→END)
+ *  与主控板 spi_master_comm.cpp handleFrame() 配合:
+ *    第1步: 发送 SPI_CMD_IMG_FRAME_START (0x01) + 元数据
+ *    第2步: 发送 SPI_CMD_IMG_FRAME_DATA  (0x02) + blockIndex+blockSize+数据
+ *    第3步: 发送 SPI_CMD_IMG_FRAME_END   (0x03) + totalBlocks
  * ============================================================ */
 bool SpiSlaveComm::sendFrame(const uint8_t* imageData, uint32_t dataSize,
                               uint16_t width, uint16_t height, uint8_t format)
@@ -178,27 +182,26 @@ bool SpiSlaveComm::sendFrame(const uint8_t* imageData, uint32_t dataSize,
 
     DBG_PRINTF("[SPI] 发送图像: %ux%u, %u字节\n", width, height, (unsigned)dataSize);
 
-    /* --- 第1步: 发送元数据帧 --- */
-    /* 元数据内容: 宽度(2) + 高度(2) + 格式(1) + 总大小(4) = 9字节 */
+    /* --- 第1步: 发送元数据帧 (CMD=0x01 START) --- */
+    /* 元数据: width(2B LE) + height(2B LE) + format(1B) + totalSize(4B LE) = 9字节 */
     uint8_t metaData[9];
-    metaData[0] = (width >> 8) & 0xFF;         /* 宽度高字节 */
-    metaData[1] = width & 0xFF;                /* 宽度低字节 */
-    metaData[2] = (height >> 8) & 0xFF;        /* 高度高字节 */
-    metaData[3] = height & 0xFF;               /* 高度低字节 */
+    metaData[0] = width & 0xFF;                /* 宽度低字节(LE) */
+    metaData[1] = (width >> 8) & 0xFF;         /* 宽度高字节 */
+    metaData[2] = height & 0xFF;               /* 高度低字节(LE) */
+    metaData[3] = (height >> 8) & 0xFF;        /* 高度高字节 */
     metaData[4] = format;                      /* 图像格式 */
-    metaData[5] = (dataSize >> 24) & 0xFF;     /* 总大小 字节3 */
-    metaData[6] = (dataSize >> 16) & 0xFF;     /* 总大小 字节2 */
-    metaData[7] = (dataSize >> 8) & 0xFF;      /* 总大小 字节1 */
-    metaData[8] = dataSize & 0xFF;             /* 总大小 字节0 */
+    metaData[5] = dataSize & 0xFF;             /* 总大小(LE) */
+    metaData[6] = (dataSize >> 8) & 0xFF;
+    metaData[7] = (dataSize >> 16) & 0xFF;
+    metaData[8] = (dataSize >> 24) & 0xFF;
 
-    /* 构建元数据帧并发送 */
     uint32_t frameLen = 0;
-    if (!_buildFrame(SPI_CMD_IMG_FRAME, metaData, 9, _txBuffer, &frameLen)) {
+    if (!_buildFrame(SPI_CMD_IMG_FRAME_START, metaData, sizeof(metaData),
+                     _txBuffer, &frameLen)) {
         xSemaphoreGive(_txMutex);
         return false;
     }
 
-    /* 拉高 DATA_READY → 等待主控读取 → 拉低 DATA_READY */
     signalDataReady();
     bool ok = _transact(_txBuffer, _rxBuffer, frameLen);
     clearDataReady();
@@ -208,30 +211,37 @@ bool SpiSlaveComm::sendFrame(const uint8_t* imageData, uint32_t dataSize,
         xSemaphoreGive(_txMutex);
         return false;
     }
-
-    /* 解析主控可能的回复 */
     _parseRxData(_rxBuffer, frameLen);
 
-    /* --- 第2步: 分块发送图像数据 --- */
-    /* 每块最大数据量 = SPI_MAX_TRANSFER - 协议开销 */
-    uint32_t maxChunkData = SPI_MAX_TRANSFER - SPI_FRAME_OVERHEAD;
+    /* --- 第2步: 分块发送图像数据 (CMD=0x02 DATA) --- */
+    /* 每块数据区 = maxChunk - 块头(blockIndex 2B + blockSize 2B = 4B) */
+    uint32_t maxChunkData = SPI_MAX_TRANSFER - SPI_FRAME_OVERHEAD - 4;
     uint32_t offset = 0;
     uint16_t chunkIndex = 0;
 
+    /* 计算总分块数 */
+    uint16_t totalChunks = (uint16_t)((dataSize + maxChunkData - 1) / maxChunkData);
+    if (totalChunks == 0) totalChunks = 1;
+
     while (offset < dataSize) {
-        /* 计算当前块大小 */
         uint32_t remaining = dataSize - offset;
         uint32_t chunkSize = (remaining > maxChunkData) ? maxChunkData : remaining;
 
-        /* 构建数据帧 */
-        if (!_buildFrame(SPI_CMD_IMG_FRAME, imageData + offset, chunkSize,
+        /* 构造块数据: blockIndex(2B LE) + blockSize(2B LE) + 图像数据 */
+        uint8_t chunkBuf[SPI_MAX_TRANSFER];
+        chunkBuf[0] = chunkIndex & 0xFF;
+        chunkBuf[1] = (chunkIndex >> 8) & 0xFF;
+        chunkBuf[2] = chunkSize & 0xFF;
+        chunkBuf[3] = (chunkSize >> 8) & 0xFF;
+        memcpy(chunkBuf + 4, imageData + offset, chunkSize);
+
+        if (!_buildFrame(SPI_CMD_IMG_FRAME_DATA, chunkBuf, 4 + chunkSize,
                          _txBuffer, &frameLen)) {
             DBG_PRINTF("[SPI] 数据块 %u 构帧失败\n", chunkIndex);
             xSemaphoreGive(_txMutex);
             return false;
         }
 
-        /* 拉高 DATA_READY → 等待主控读取 → 拉低 DATA_READY */
         signalDataReady();
         ok = _transact(_txBuffer, _rxBuffer, frameLen);
         clearDataReady();
@@ -241,22 +251,44 @@ bool SpiSlaveComm::sendFrame(const uint8_t* imageData, uint32_t dataSize,
             xSemaphoreGive(_txMutex);
             return false;
         }
-
-        /* 解析主控可能的回复 */
         _parseRxData(_rxBuffer, frameLen);
 
         offset += chunkSize;
         chunkIndex++;
 
 #ifdef DEBUG
-        DBG_PRINTF("[SPI] 已发送块 %u: %u字节 (进度 %u/%u)\n",
-                   chunkIndex, (unsigned)chunkSize, (unsigned)offset, (unsigned)dataSize);
+        DBG_PRINTF("[SPI] 已发送块 %u/%u: %u字节 (进度 %u/%u)\n",
+                   chunkIndex, totalChunks, (unsigned)chunkSize,
+                   (unsigned)offset, (unsigned)dataSize);
 #endif
     }
 
+    /* --- 第3步: 发送结束帧 (CMD=0x03 END) --- */
+    /* 结束载荷: totalBlocks(2B LE) */
+    uint8_t endData[2];
+    endData[0] = totalChunks & 0xFF;
+    endData[1] = (totalChunks >> 8) & 0xFF;
+
+    if (!_buildFrame(SPI_CMD_IMG_FRAME_END, endData, 2, _txBuffer, &frameLen)) {
+        DBG_PRINTLN("[SPI] 结束帧构建失败");
+        xSemaphoreGive(_txMutex);
+        return false;
+    }
+
+    signalDataReady();
+    ok = _transact(_txBuffer, _rxBuffer, frameLen);
+    clearDataReady();
+
+    if (!ok) {
+        DBG_PRINTLN("[SPI] 结束帧发送失败");
+        xSemaphoreGive(_txMutex);
+        return false;
+    }
+    _parseRxData(_rxBuffer, frameLen);
+
     _txFrameCount++;
     DBG_PRINTF("[SPI] 图像发送完成: %u块, 总计%u字节\n",
-               chunkIndex, (unsigned)dataSize);
+               totalChunks, (unsigned)dataSize);
 
     xSemaphoreGive(_txMutex);
     return true;
@@ -297,26 +329,27 @@ bool SpiSlaveComm::sendHeartbeat(uint32_t timestamp)
 }
 
 /* ============================================================
- *  拉高数据就绪信号
+ *  激活数据就绪信号(LOW=有数据, 与主控FALLING边沿检测配合)
  *  通知主控板: 数据已准备好，可以发起 SPI 读取
  * ============================================================ */
 void SpiSlaveComm::signalDataReady(void)
 {
-    digitalWrite(PIN_DATA_READY, DATA_READY_ACTIVE);
+    digitalWrite(PIN_DATA_READY, DATA_READY_ACTIVE);  /* 拉低 → 主控检测下降沿 */
 }
 
 /* ============================================================
- *  拉低数据就绪信号
+ *  清除数据就绪信号(HIGH=空闲)
  *  通知主控板: 数据已被读取，等待下一帧
  * ============================================================ */
 void SpiSlaveComm::clearDataReady(void)
 {
-    digitalWrite(PIN_DATA_READY, DATA_READY_IDLE);
+    digitalWrite(PIN_DATA_READY, DATA_READY_IDLE);    /* 拉高 → 空闲 */
 }
 
 /* ============================================================
- *  内部: 构建协议帧
- *  帧格式: [帧头0xAA55][命令][长度4B][数据][CRC8][帧尾0x55AA]
+ *  内部: 构建协议帧(与主控板 protocol.h 一致)
+ *  帧格式: [帧头0xAA55][命令1B][长度2B LE][数据NB][CRC8][帧尾0x55AA]
+ *  帧开销 = 2+1+2+1+2 = 8字节
  * ============================================================ */
 bool SpiSlaveComm::_buildFrame(uint8_t cmd, const uint8_t* data, uint32_t dataLen,
                                 uint8_t* outBuf, uint32_t* outLen)
@@ -338,24 +371,22 @@ bool SpiSlaveComm::_buildFrame(uint8_t cmd, const uint8_t* data, uint32_t dataLe
     /* 写入命令码 */
     outBuf[2] = cmd;
 
-    /* 写入数据长度 (4字节大端序) */
-    outBuf[3] = (dataLen >> 24) & 0xFF;
-    outBuf[4] = (dataLen >> 16) & 0xFF;
-    outBuf[5] = (dataLen >> 8) & 0xFF;
-    outBuf[6] = dataLen & 0xFF;
+    /* 写入数据长度 (2字节小端序) */
+    outBuf[3] = dataLen & 0xFF;
+    outBuf[4] = (dataLen >> 8) & 0xFF;
 
-    /* 写入数据 */
+    /* 写入数据 (从偏移5开始) */
     if (data && dataLen > 0) {
-        memcpy(outBuf + 7, data, dataLen);
+        memcpy(outBuf + 5, data, dataLen);
     }
 
-    /* 计算 CRC8 (覆盖: 命令 + 长度 + 数据) */
-    uint8_t crc = _crc8(outBuf + 2, 1 + 4 + dataLen);
-    outBuf[7 + dataLen] = crc;
+    /* 计算 CRC8 (覆盖: 命令1B + 长度2B + 数据NB) */
+    uint8_t crc = _crc8(outBuf + 2, 1 + 2 + dataLen);
+    outBuf[5 + dataLen] = crc;
 
     /* 写入帧尾 */
-    outBuf[8 + dataLen] = 0x55;
-    outBuf[9 + dataLen] = 0xAA;
+    outBuf[6 + dataLen] = 0x55;
+    outBuf[7 + dataLen] = 0xAA;
 
     *outLen = totalLen;
     return true;
@@ -419,32 +450,29 @@ bool SpiSlaveComm::_parseRxData(const uint8_t* data, size_t len)
     /* 提取命令码 */
     uint8_t cmd = data[2];
 
-    /* 提取数据长度 (4字节大端序) */
-    uint32_t dataLen = ((uint32_t)data[3] << 24) |
-                       ((uint32_t)data[4] << 16) |
-                       ((uint32_t)data[5] << 8)  |
-                       ((uint32_t)data[6]);
+    /* 提取数据长度 (2字节小端序, 与主控一致) */
+    uint32_t dataLen = (uint32_t)data[3] | ((uint32_t)data[4] << 8);
 
     /* 检查数据长度有效性 */
     if (dataLen > SPI_MAX_TRANSFER) {
         return false;
     }
 
-    /* 校验总长度 */
+    /* 校验总长度(帧开销=8字节) */
     if (len < SPI_FRAME_OVERHEAD + dataLen) {
         return false;
     }
 
-    /* 校验 CRC8 (覆盖: 命令 + 长度 + 数据) */
-    uint8_t expectedCrc = _crc8(data + 2, 1 + 4 + dataLen);
-    uint8_t actualCrc = data[7 + dataLen];
+    /* 校验 CRC8 (覆盖: 命令1B + 长度2B + 数据NB) */
+    uint8_t expectedCrc = _crc8(data + 2, 1 + 2 + dataLen);
+    uint8_t actualCrc = data[5 + dataLen];
     if (expectedCrc != actualCrc) {
         DBG_PRINTF("[SPI] CRC校验失败: 期望0x%02X 实际0x%02X\n", expectedCrc, actualCrc);
         return false;
     }
 
     /* 校验帧尾 */
-    if (data[8 + dataLen] != 0x55 || data[9 + dataLen] != 0xAA) {
+    if (data[6 + dataLen] != 0x55 || data[7 + dataLen] != 0xAA) {
         return false;
     }
 
@@ -453,7 +481,7 @@ bool SpiSlaveComm::_parseRxData(const uint8_t* data, size_t len)
         RxFrame_t rxFrame;
         rxFrame.cmd = cmd;
         rxFrame.dataLen = (dataLen > SPI_MAX_TRANSFER) ? SPI_MAX_TRANSFER : dataLen;
-        memcpy(rxFrame.data, data + 7, rxFrame.dataLen);
+        memcpy(rxFrame.data, data + 5, rxFrame.dataLen);
 
         /* 非阻塞方式放入队列 */
         xQueueSend(_rxQueue, &rxFrame, 0);
