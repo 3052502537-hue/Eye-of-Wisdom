@@ -128,7 +128,7 @@ bool SpiSlaveComm::init(void)
         .data7_io_num    = GPIO_NUM_NC,
         .max_transfer_sz = SPI_MAX_TRANSFER, /* 单次最大传输量 */
         .flags           = 0,
-        .isr_cpu_id      = INTR_CPU_ID_1,  /* 中断在 CPU1 */
+        .isr_cpu_id      = ESP_INTR_CPU_AFFINITY_1,  /* 中断在 CPU1 */
         .intr_flags      = 0,
     };
 
@@ -144,7 +144,7 @@ bool SpiSlaveComm::init(void)
 
     /* --- 初始化 SPI 从机 --- */
     /* 使用 DMA 通道 1 提高传输效率 */
-    esp_err_t ret = spi_slave_initialize(SPI_HOST_DEVICE, &busCfg, &slaveCfg, DMA_CHANNEL_1);
+    esp_err_t ret = spi_slave_initialize(SPI_HOST_DEVICE, &busCfg, &slaveCfg, SPI_DMA_CH_AUTO);
     if (ret != ESP_OK) {
         DBG_PRINTF("[SPI] spi_slave_initialize 失败: %s\n", esp_err_to_name(ret));
         return false;
@@ -227,8 +227,9 @@ bool SpiSlaveComm::sendFrame(const uint8_t* imageData, uint32_t dataSize,
         uint32_t remaining = dataSize - offset;
         uint32_t chunkSize = (remaining > maxChunkData) ? maxChunkData : remaining;
 
-        /* 构造块数据: blockIndex(2B LE) + blockSize(2B LE) + 图像数据 */
-        uint8_t chunkBuf[SPI_MAX_TRANSFER];
+        /* 构造块数据: blockIndex(2B LE) + blockSize(2B LE) + 图像数据
+         * 注意: static 避免 4KB 栈分配导致溢出 */
+        static uint8_t chunkBuf[SPI_MAX_TRANSFER];
         chunkBuf[0] = chunkIndex & 0xFF;
         chunkBuf[1] = (chunkIndex >> 8) & 0xFF;
         chunkBuf[2] = chunkSize & 0xFF;

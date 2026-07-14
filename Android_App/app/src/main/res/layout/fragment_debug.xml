@@ -40,7 +40,7 @@
             android:paddingTop="8dp"
             android:paddingBottom="12dp" />
 
-        <!-- ==================== 视频预览 ==================== -->
+        <!-- ==================== 视频预览 (AI检测框叠加) ==================== -->
         <androidx.cardview.widget.CardView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
@@ -65,7 +65,7 @@
                         android:layout_width="0dp"
                         android:layout_height="wrap_content"
                         android:layout_weight="1"
-                        android:text="📷 视频预览"
+                        android:text="📷 视频预览 (AI叠加)"
                         android:textSize="16sp"
                         android:textStyle="bold"
                         android:textColor="#4FC3F7" />
@@ -85,6 +85,56 @@
                     android:layout_height="260dp"
                     android:background="#000000"
                     android:contentDescription="视频预览与AI检测框叠加" />
+
+            </LinearLayout>
+        </androidx.cardview.widget.CardView>
+
+        <!-- ==================== 原始视频 (无叠加, 直接显示JPEG) ==================== -->
+        <androidx.cardview.widget.CardView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="10dp"
+            app:cardCornerRadius="10dp"
+            app:cardElevation="3dp"
+            app:cardBackgroundColor="#16213E">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:padding="10dp">
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:paddingBottom="6dp">
+
+                    <TextView
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="🖼️ 原始视频 (直出)"
+                        android:textSize="16sp"
+                        android:textStyle="bold"
+                        android:textColor="#66BB6A" />
+
+                    <TextView
+                        android:id="@+id/text_raw_video_info"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="等待..."
+                        android:textSize="12sp"
+                        android:textColor="#90A4AE" />
+                </LinearLayout>
+
+                <ImageView
+                    android:id="@+id/image_raw_video"
+                    android:layout_width="match_parent"
+                    android:layout_height="260dp"
+                    android:background="#000000"
+                    android:scaleType="fitCenter"
+                    android:contentDescription="原始JPEG视频直出" />
 
             </LinearLayout>
         </androidx.cardview.widget.CardView>

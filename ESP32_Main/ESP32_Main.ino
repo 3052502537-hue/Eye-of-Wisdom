@@ -72,71 +72,40 @@ void setup()
     }
 
     /* ============================================================
-     * 6. 传感器 UART 初始化 (必须在 SPI 之前!)
-     *    每个传感器独立初始化, 失败不阻塞后续流程
+     * 6. 传感器 UART 初始化 — [临时跳过, 专注测试图传]
+     *    TODO: 传感器就绪后取消注释, 恢复完整功能
      * ============================================================ */
-    Serial.println(F("[MAIN] ---- Sensor UART Init ----"));
-
-    /* 6a. SDM10 激光 (UART1, GPIO17/18) */
-    Serial.println(F("[MAIN] init SDM10 laser (UART1)..."));
-    if (g_tm.laser().begin()) {
-        Serial.println(F("[MAIN]   SDM10 UART OK"));
-    } else {
-        Serial.println(F("[MAIN]   SDM10 UART FAIL (continuing)"));
-    }
-
-    /* 6b. 前向雷达 (Serial0, GPIO6/7) */
-    Serial.println(F("[MAIN] init front radar (UART0)..."));
-    if (g_tm.radarFront().begin(RADAR_FRONT_UART, PIN_RADAR_FRONT_TX,
-                                 PIN_RADAR_FRONT_RX, RADAR_BAUDRATE)) {
-        Serial.println(F("[MAIN]   Front Radar UART OK"));
-    } else {
-        Serial.println(F("[MAIN]   Front Radar UART FAIL (continuing)"));
-    }
-
-    /* 6c. 后向雷达 (Serial2, GPIO4/5) */
-    Serial.println(F("[MAIN] init rear radar (UART2)..."));
-    if (g_tm.radarRear().begin(RADAR_REAR_UART, PIN_RADAR_REAR_TX,
-                                PIN_RADAR_REAR_RX, RADAR_BAUDRATE)) {
-        Serial.println(F("[MAIN]   Rear Radar UART OK"));
-    } else {
-        Serial.println(F("[MAIN]   Rear Radar UART FAIL (continuing)"));
-    }
+    Serial.println(F("[MAIN] ---- Sensor UART Init (SKIPPED for image test) ----"));
+    g_laserOnline  = false;
+    g_radarFOnline = false;
+    g_radarROnline = false;
+    Serial.println(F("[MAIN] Sensors bypassed — WiFi + SPI only"));
 
     /* ============================================================
-     * 7. 传感器自检 (无传感器时全部超时失败, 正常现象)
-     *    红灯闪烁提示, 但不阻塞 WiFi 启动
+     * 7. WiFi AP 热点 — 必须在 SPI 之前! (WiFi需要DMA/中断资源)
      * ============================================================ */
-    Serial.println(F("[MAIN] ---- Sensor Self-Test ----"));
-    g_laserOnline  = g_tm.laser().selfTest();
-    g_radarFOnline = g_tm.radarFront().selfTest();
-    g_radarROnline = g_tm.radarRear().selfTest();
-
-    Serial.printf("[MAIN] Self-test: SDM10=%s  RadarFront=%s  RadarRear=%s\n",
-                  g_laserOnline  ? "OK" : "FAIL",
-                  g_radarFOnline ? "OK" : "FAIL",
-                  g_radarROnline ? "OK" : "FAIL");
-
-    if (g_laserOnline && g_radarFOnline && g_radarROnline) {
-        g_tm.alarm().setSystemState(SYS_STATE_NORMAL);
+    Serial.println(F("[MAIN] ---- WiFi AP ----"));
+    if (!g_tm.wifi().startAP()) {
+        Serial.println(F("[MAIN] WiFi AP FAIL!"));
+        g_tm.alarm().setSystemState(SYS_STATE_FAULT);
         g_tm.alarm().update();
-        Serial.println(F("[MAIN] All sensors OK -> GREEN"));
     } else {
-        /* 红灯闪烁 3 次 + 蜂鸣 (缩短: 3次 ≈ 1.2秒) */
-        for (int i = 0; i < 3; i++) {
-            g_tm.alarm().setSystemState(SYS_STATE_FAULT);
-            g_tm.alarm().update();
-            g_tm.alarm().beep(2000, 80);
-            delay(150);
-            g_tm.alarm().setRgbColor(0, 0, 0);
-            delay(150);
-        }
-        Serial.println(F("[MAIN] Some sensors offline -> RED flash (WiFi will still start)"));
+        Serial.printf("[MAIN] AP SSID=%s  IP=%s\n",
+                      WIFI_AP_SSID, g_tm.wifi().getApIp().toString().c_str());
     }
 
+    /* ---- 8. TCP/UDP 服务器 ---- */
+    g_tm.wifi().startTcpServer();
+    g_tm.wifi().startUdpServer();
+    Serial.printf("[MAIN] TCP:%d  UDP:%d\n", TCP_PORT, UDP_PORT);
+
+    /* ---- 9. Web 配置服务器 ---- */
+    g_tm.web().begin();
+    Serial.println(F("[MAIN] Web server on port 80"));
+
     /* ============================================================
-     * 8. SPI 主机通信 (在 UART 之后初始化, 避免 DMA 资源冲突)
-     *    摄像头板未连接时失败是正常的, 不影响主控独立工作
+     * 10. SPI 主机通信 (WiFi之后初始化, 避免DMA资源冲突)
+     *    摄像头板未连接时失败是正常的
      * ============================================================ */
     Serial.println(F("[MAIN] ---- SPI Init ----"));
     if (g_tm.spi().begin()) {
@@ -151,29 +120,7 @@ void setup()
         Serial.println(F("[MAIN] SPI init FAIL (continuing without camera)"));
     }
 
-    /* ============================================================
-     * 9. WiFi AP 热点 (无论传感器/摄像头状态如何, 必须启动)
-     * ============================================================ */
-    Serial.println(F("[MAIN] ---- WiFi AP ----"));
-    if (!g_tm.wifi().startAP()) {
-        Serial.println(F("[MAIN] WiFi AP FAIL!"));
-        g_tm.alarm().setSystemState(SYS_STATE_FAULT);
-        g_tm.alarm().update();
-    } else {
-        Serial.printf("[MAIN] AP SSID=%s  IP=%s\n",
-                      WIFI_AP_SSID, g_tm.wifi().getApIp().toString().c_str());
-    }
-
-    /* ---- 10. TCP/UDP 服务器 ---- */
-    g_tm.wifi().startTcpServer();
-    g_tm.wifi().startUdpServer();
-    Serial.printf("[MAIN] TCP:%d  UDP:%d\n", TCP_PORT, UDP_PORT);
-
-    /* ---- 11. Web 配置服务器 ---- */
-    g_tm.web().begin();
-    Serial.println(F("[MAIN] Web server on port 80"));
-
-    /* ---- 12. 命令回调 (精简版: 不含 SPI 操作, 安全) ---- */
+    /* ---- 11. 命令回调 ---- */
     g_tm.wifi().setCommandCallback([](AppCommand_t cmd, const char* json, size_t len) {
 #ifdef DEBUG
         Serial.printf("[CMD] cmd=%d json=%.*s\n", cmd, (int)len, json);
@@ -249,7 +196,7 @@ void setup()
         }
     });
 
-    /* ---- 13. 创建 FreeRTOS 任务 (各任务内部检查硬件状态) ---- */
+    /* ---- 12. 创建 FreeRTOS 任务 (各任务内部检查硬件状态) ---- */
     Serial.println(F("[MAIN] starting FreeRTOS tasks..."));
     if (!g_tm.startTasks()) {
         Serial.println(F("[MAIN] Task create FAIL!"));
@@ -257,7 +204,7 @@ void setup()
         Serial.println(F("[MAIN] All tasks started"));
     }
 
-    /* ---- 14. 进入工作模式 ---- */
+    /* ---- 13. 进入工作模式 ---- */
     g_tm.alarm().setSystemState(SYS_STATE_NORMAL);
     g_tm.alarm().update();
     Serial.println(F("[MAIN] GREEN - system ready"));

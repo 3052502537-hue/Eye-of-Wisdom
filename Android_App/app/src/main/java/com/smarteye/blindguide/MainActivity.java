@@ -136,6 +136,9 @@ public class MainActivity extends AppCompatActivity {
     private void initViews() {
         bottomNav = findViewById(R.id.bottom_navigation);
 
+        // v1.1: 调试阶段开发者页直接可见
+        updateDebugNavVisibility();
+
         // 底部导航项点击监听
         bottomNav.setOnItemSelectedListener(item -> {
             int itemId = item.getItemId();

@@ -141,8 +141,8 @@ public class AppConfig {
     /** 是否启用震动反馈 */
     private boolean vibrationEnabled = true;
 
-    /** 是否已激活开发者模式 */
-    private boolean debugModeActivated = false;
+    /** 是否已激活开发者模式 (v1.1: 默认开启, 调试阶段) */
+    private boolean debugModeActivated = true;
 
     /** WiFi SSID（ESP32 AP 热点名称） */
     private String wifiSSID = "BlindGuide_AP";

@@ -25,6 +25,7 @@ import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.Button;
+import android.widget.ImageView;
 import android.widget.ScrollView;
 import android.widget.TextView;
 
@@ -55,6 +56,10 @@ public class DebugFragment extends Fragment implements MainActivity.DebugDataLis
 
     /** 视频预览 + AI 检测框叠加 */
     private DetectionOverlayView detectionOverlay;
+
+    /** v1.1: 原始视频直出 (无叠加) */
+    private ImageView imageRawVideo;
+    private TextView textRawVideoInfo;
 
     /** 帧信息 */
     private TextView textFrameInfo;
@@ -128,6 +133,10 @@ public class DebugFragment extends Fragment implements MainActivity.DebugDataLis
         // 视频预览
         detectionOverlay = view.findViewById(R.id.detection_overlay);
         textFrameInfo = view.findViewById(R.id.text_frame_info);
+
+        // v1.1: 原始视频直出
+        imageRawVideo = view.findViewById(R.id.image_raw_video);
+        textRawVideoInfo = view.findViewById(R.id.text_raw_video_info);
 
         // 原始传感器数据
         textRawLaser = view.findViewById(R.id.text_raw_laser);
@@ -246,13 +255,23 @@ public class DebugFragment extends Fragment implements MainActivity.DebugDataLis
     private void updateVideoPreview(Protocol.ImageFrame frame) {
         try {
             if (frame.jpegData != null && frame.jpegData.length > 0) {
-                // 解码 JPEG 并设置到底图
-                detectionOverlay.setImageBitmap(
-                        BitmapFactory.decodeByteArray(frame.jpegData, 0, frame.jpegData.length));
+                // 解码 JPEG
+                android.graphics.Bitmap bmp = BitmapFactory.decodeByteArray(
+                        frame.jpegData, 0, frame.jpegData.length);
 
-                // 更新帧信息
-                textFrameInfo.setText(String.format("帧#%d | %.1f fps",
-                        frame.frameNumber, currentFps));
+                if (bmp != null) {
+                    // 设置到两个视图
+                    detectionOverlay.setImageBitmap(bmp);
+                    imageRawVideo.setImageBitmap(bmp);
+
+                    // 更新帧信息
+                    String info = String.format("帧#%d | %.1f fps | %dKB",
+                            frame.frameNumber, currentFps, frame.jpegData.length / 1024);
+                    textFrameInfo.setText(info);
+                    textRawVideoInfo.setText(String.format("%dx%d", bmp.getWidth(), bmp.getHeight()));
+                } else {
+                    appendLog("JPEG解码失败: " + frame.jpegData.length + "字节");
+                }
             }
         } catch (Exception e) {
             appendLog("视频解码失败: " + e.getMessage());

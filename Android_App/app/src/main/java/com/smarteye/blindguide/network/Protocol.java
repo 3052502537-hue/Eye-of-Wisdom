@@ -188,6 +188,24 @@ public class Protocol {
         }
     }
 
+    /**
+     * v1.1: UDP 分片信息
+     * 单个 UDP 包中提取的切片元数据 + 数据
+     */
+    public static class SliceInfo {
+        public int frameNumber;
+        public int sliceIndex;
+        public int sliceTotal;
+        public byte[] jpegSlice;
+
+        public SliceInfo(int frameNumber, int sliceIndex, int sliceTotal, byte[] jpegSlice) {
+            this.frameNumber = frameNumber;
+            this.sliceIndex = sliceIndex;
+            this.sliceTotal = sliceTotal;
+            this.jpegSlice = jpegSlice;
+        }
+    }
+
     // ==================== 解析与构建方法 ====================
 
     /** Gson 实例（线程安全） */
@@ -300,48 +318,42 @@ public class Protocol {
     }
 
     /**
-     * 解析 UDP 图像数据包(与ESP32固件 UdpImgHeader_t 一致)
-     * 协议格式: [4B帧号LE][2B分片序号LE][2B总分片数LE][2B数据长度LE][JPEG数据]
+     * v1.1: 解析 UDP 图像分片 (不尝试解码, 仅提取分片信息供重组)
+     * 协议格式(与ESP32固件 UdpImgHeader_t 一致):
+     *   [4B帧号LE][2B分片序号LE][2B总分片数LE][2B数据长度LE][JPEG分片数据]
      * @param buffer 接收到的字节数组
      * @param length 实际数据长度
-     * @return ImageFrame 对象，解析失败返回 null
+     * @return SliceInfo 对象，解析失败返回 null
      */
-    public static ImageFrame parseImagePacket(byte[] buffer, int length) {
+    public static SliceInfo parseImageSlice(byte[] buffer, int length) {
         try {
-            if (length < UDP_IMAGE_HEADER_SIZE) {
-                return null;
-            }
+            if (length < UDP_IMAGE_HEADER_SIZE) return null;
 
-            // 帧号(4B LE)
             int frameNumber = bytesToInt(buffer, 0);
+            int sliceIndex  = ((buffer[4] & 0xFF) | ((buffer[5] & 0xFF) << 8));
+            int sliceTotal  = ((buffer[6] & 0xFF) | ((buffer[7] & 0xFF) << 8));
+            int dataLen     = ((buffer[8] & 0xFF) | ((buffer[9] & 0xFF) << 8));
 
-            // 分片序号(2B LE)
-            int sliceIndex = ((buffer[4] & 0xFF) | ((buffer[5] & 0xFF) << 8));
+            if (length < UDP_IMAGE_HEADER_SIZE + dataLen) return null;
+            if (dataLen <= 0) return null;
 
-            // 总分片数(2B LE)
-            int sliceTotal = ((buffer[6] & 0xFF) | ((buffer[7] & 0xFF) << 8));
+            byte[] jpegSlice = new byte[dataLen];
+            System.arraycopy(buffer, UDP_IMAGE_HEADER_SIZE, jpegSlice, 0, dataLen);
 
-            // 当前包JPEG数据长度(2B LE)
-            int dataLen = ((buffer[8] & 0xFF) | ((buffer[9] & 0xFF) << 8));
-
-            // 校验数据长度
-            if (length < UDP_IMAGE_HEADER_SIZE + dataLen) {
-                return null;
-            }
-
-            // 提取 JPEG 数据
-            byte[] jpegData = new byte[dataLen];
-            System.arraycopy(buffer, UDP_IMAGE_HEADER_SIZE, jpegData, 0, dataLen);
-
-            ImageFrame frame = new ImageFrame(frameNumber, jpegData);
-            // 如果是分片传输，标记分片信息(供后续重组使用)
-            // frame.sliceIndex = sliceIndex; frame.sliceTotal = sliceTotal;
-            // 当前单包模式: 大部分JPEG < MTU, sliceTotal通常为1
-
-            return frame;
+            return new SliceInfo(frameNumber, sliceIndex, sliceTotal, jpegSlice);
         } catch (Exception e) {
             return null;
         }
+    }
+
+    /**
+     * 解析 UDP 图像数据包(与ESP32固件 UdpImgHeader_t 一致)
+     * 保留旧接口兼容, 内部调用 parseImageSlice 并直接返回单包数据
+     */
+    public static ImageFrame parseImagePacket(byte[] buffer, int length) {
+        SliceInfo slice = parseImageSlice(buffer, length);
+        if (slice == null) return null;
+        return new ImageFrame(slice.frameNumber, slice.jpegSlice);
     }
 
     /**

@@ -114,8 +114,8 @@ bool SpiMasterComm::readFrameIfReady()
         return false;  // 总线忙, 下次再试
     }
 
-    /* 读取一帧原始数据 */
-    uint8_t rawBuf[SPI_FRAME_OVERHEAD + SPI_MAX_DATA_LEN];
+    /* 读取一帧原始数据 (static 避免 4KB 栈分配导致溢出) */
+    static uint8_t rawBuf[SPI_FRAME_OVERHEAD + SPI_MAX_DATA_LEN];
     size_t rawLen = spiTransfer(rawBuf, sizeof(rawBuf));
 
     xSemaphoreGive(_spiMutex);  // 释放总线
@@ -308,7 +308,8 @@ bool SpiMasterComm::sendFrame(uint8_t cmd, const uint8_t* payload, uint16_t len)
         return false;
     }
 
-    uint8_t buf[SPI_FRAME_OVERHEAD + SPI_MAX_DATA_LEN];
+    /* 构造帧缓冲 (static 避免 4KB 栈分配) */
+    static uint8_t buf[SPI_FRAME_OVERHEAD + SPI_MAX_DATA_LEN];
     size_t idx = 0;
 
     /* 帧头 */

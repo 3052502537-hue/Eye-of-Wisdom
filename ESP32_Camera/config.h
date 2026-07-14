@@ -37,7 +37,7 @@
  *    在 Arduino IDE 中也可通过 Tools > Debug Level 设置
  * ============================================================ */
 
-// #define DEBUG                  /* 调试总开关，取消注释则开启调试输出 */
+#define DEBUG                  /* 调试总开关，取消注释则开启调试输出 */
 
 #define DEBUG_SERIAL_BAUDRATE    115200   /* 调试串口波特率 */
 
@@ -119,20 +119,20 @@
  *    VGA 分辨率 640x480，JPEG 压缩输出
  * ============================================================ */
 
-#define CAMERA_FRAME_WIDTH    640      /* 图像宽度 (VGA) */
-#define CAMERA_FRAME_HEIGHT   480      /* 图像高度 (VGA) */
+#define CAMERA_FRAME_WIDTH    320      /* 图像宽度 (QVGA, 调试阶段) */
+#define CAMERA_FRAME_HEIGHT   240      /* 图像高度 (QVGA) */
 #define CAMERA_PIXEL_FORMAT   PIXFORMAT_JPEG  /* 像素格式: JPEG 压缩 */
-#define CAMERA_FRAME_SIZE     FRAMESIZE_VGA   /* 帧尺寸枚举: VGA */
+#define CAMERA_FRAME_SIZE     FRAMESIZE_QVGA  /* 帧尺寸枚举: QVGA */
 #define CAMERA_JPEG_QUALITY   10       /* JPEG 质量 (数值越小质量越高，5-63) */
 #define CAMERA_XCLK_FREQ      20000000 /* 摄像头主时钟频率 20MHz */
 #define CAMERA_FB_COUNT       2        /* 帧缓冲区数量 (双缓冲) */
 #define CAMERA_FB_LOCATION    CAMERA_FB_IN_PSRAM  /* 帧缓冲存放位置: PSRAM */
 
-#define CAMERA_FPS_TARGET     6        /* 目标帧率 6fps (5-8fps 范围) */
+#define CAMERA_FPS_TARGET     8        /* 目标帧率 8fps */
 #define CAMERA_FRAME_INTERVAL_MS  (1000 / CAMERA_FPS_TARGET)  /* 帧间隔(ms) */
 
-/* JPEG 图像最大尺寸预估 (VGA JPEG 通常 10-50KB) */
-#define JPEG_MAX_SIZE         (60 * 1024)  /* JPEG 最大 60KB */
+/* JPEG 图像最大尺寸预估 (QVGA JPEG 通常 3-15KB) */
+#define JPEG_MAX_SIZE         (30 * 1024)  /* JPEG 最大 30KB */
 
 /* ============================================================
  *  六、SPI 通信协议常量(与主控板 protocol.h 一致)
@@ -181,7 +181,7 @@
 
 /* 任务栈大小 (单位: 字节) */
 #define TASK_STACK_CAM_CAPTURE      8192  /* 摄像头采集需要较大栈 */
-#define TASK_STACK_SPI_SEND         6144  /* SPI 发送任务栈 */
+#define TASK_STACK_SPI_SEND         10240 /* SPI 发送任务栈 (v1.1: 增大, 避免栈溢出) */
 #define TASK_STACK_IMG_PROC         4096  /* 图像处理任务栈 */
 #define TASK_STACK_COMM             3072  /* 指令处理任务栈 */
 #define TASK_STACK_HEARTBEAT        2048  /* 心跳任务栈 */

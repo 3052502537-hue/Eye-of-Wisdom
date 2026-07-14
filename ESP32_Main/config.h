@@ -167,7 +167,7 @@
 
 /* 任务栈大小（单位: 字节） */
 #define TASK_STACK_SENSOR          4096
-#define TASK_STACK_SPI             8192     // SPI需要较大缓冲
+#define TASK_STACK_SPI             10240    // SPI需要较大缓冲
 #define TASK_STACK_WIFI            8192     // WiFi+TCP/UDP需要较大栈
 #define TASK_STACK_DECISION        4096
 #define TASK_STACK_WEB             8192     // Web服务器需要较大栈
