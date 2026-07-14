@@ -28,6 +28,9 @@
 
 class RD03DDriver {
 public:
+    /* 构造函数 */
+    RD03DDriver();
+
     /* --------------------------------------------------------
      * begin - 初始化 RD-03D 雷达
      * 参数: uart     - HardwareSerial 引用(Serial0/Serial1/Serial2)

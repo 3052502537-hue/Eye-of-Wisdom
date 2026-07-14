@@ -11,8 +11,8 @@
  *
  * 引脚分配总览（已避开N16R8八线Flash/PSRAM占用引脚GPIO27~37）:
  *   UART1  -> SDM10 前向激光测距          (TX=GPIO17, RX=GPIO18)
- *   UART2  -> RD-03D 前向毫米波雷达        (TX=GPIO19, RX=GPIO20)
- *   UART0  -> RD-03D 后向毫米波雷达        (TX=GPIO4, RX=GPIO5)
+ *   UART0  -> RD-03D 前向毫米波雷达        (TX=GPIO6, RX=GPIO7)
+ *   UART2  -> RD-03D 后向毫米波雷达        (TX=GPIO4, RX=GPIO5)
  *   SPI    -> 摄像头板从机通信             (MOSI=11, MISO=13, SCK=12, CS=10)
  *   数据就绪中断 <- 摄像头板               (GPIO9, 下降沿触发)
  *   蜂鸣器 PWM                            (GPIO47)
@@ -57,23 +57,26 @@
 #define SDM10_MAX_RANGE_CM         1000      // 最大量程 10m = 1000cm(标准版,90%反射率)
 #define SDM10_INVALID_DISTANCE     (-1.0f)   // 无效距离标识
 
-/* 前向 RD-03D 毫米波雷达 —— UART2
+/* 前向 RD-03D 毫米波雷达 —— UART0
  * 24GHz FMCW, 检测运动目标, 距离0.5-8m, 角度±60°, 最多3目标
- * 协议: 256000bps 8N1, 连续二进制输出 X/Y/Speed */
-#define PIN_RADAR_FRONT_RX         19        // ESP32 TX -> 雷达 RX
-#define PIN_RADAR_FRONT_TX         20        // 雷达 TX  -> ESP32 RX
-#define RADAR_FRONT_UART           Serial2   // Arduino: Serial2 对应 UART2
+ * 协议: 256000bps 8N1, 连续二进制输出 X/Y/Speed
+ * 注意: GPIO19/20 在N16R8板上硬连USB-C OTG接口, 不可用作UART.
+ *       已改为GPIO6/7(板上空闲GPIO)
+ *       UART0用于前雷达(Serial0已验证可用) */
+#define PIN_RADAR_FRONT_RX         6         // ESP32 TX -> 雷达 RX (GPIO6, 避开USB OTG)
+#define PIN_RADAR_FRONT_TX         7         // 雷达 TX  -> ESP32 RX (GPIO7, 避开USB OTG)
+#define RADAR_FRONT_UART           Serial0   // Arduino: Serial0 对应 UART0
 #define RADAR_BAUDRATE             256000    // RD-03D 默认波特率(实测256000)
 #define RADAR_MAX_TARGETS          3         // 单帧最多目标数(实测3目标)
 
-/* 后向 RD-03D 毫米波雷达 —— UART0
- * 因为调试口走 USB CDC，UART0(GPIO4/5) 被释放用于后雷达
- * 注意: 必须在 Arduino IDE 开启 "USB CDC On Boot"，否则
- *       Serial0 会与默认调试串口冲突
+/* 后向 RD-03D 毫米波雷达 —— UART2
+ * 因为调试口走 USB CDC，UART0 被释放用于前雷达
+ * 后雷达使用 UART2
+ * 注意: 必须在 Arduino IDE 开启 "USB CDC On Boot"
  * 协议同前雷达: 256000bps 8N1 */
 #define PIN_RADAR_REAR_RX          4         // ESP32 TX -> 雷达 RX (GPIO4, 避开CP2102/CH340)
 #define PIN_RADAR_REAR_TX          5         // 雷达 TX  -> ESP32 RX (GPIO5, 避开CP2102/CH340)
-#define RADAR_REAR_UART            Serial0   // Arduino: Serial0 对应 UART0
+#define RADAR_REAR_UART            Serial2   // Arduino: Serial2 对应 UART2
 
 /* 传感器自检超时（ms）—— 上电自检时等待传感器应答的最大时间 */
 #define SENSOR_SELFTEST_TIMEOUT_MS 500

@@ -152,7 +152,7 @@ bool SpiSlaveComm::init(void)
 
     /* --- 初始化数据就绪引脚 --- */
     pinMode(PIN_DATA_READY, OUTPUT);
-    digitalWrite(PIN_DATA_READY, DATA_READY_IDLE);  /* 默认低电平 */
+    digitalWrite(PIN_DATA_READY, DATA_READY_IDLE);  /* 默认高电平(空闲) */
 
     _initialized = true;
     DBG_PRINTF("[SPI] 初始化成功: MOSI=%d MISO=%d SCLK=%d CS=%d READY=%d\n",

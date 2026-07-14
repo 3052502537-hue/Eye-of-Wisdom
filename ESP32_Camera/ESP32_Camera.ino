@@ -183,9 +183,9 @@ static void taskSpiSend(void* arg)
             /* 通过 SPI 从机发送图像数据给主控板 */
             /* sendFrame 内部会:
              *   1. 构建协议帧 (元数据 + 图像数据)
-             *   2. 拉高 DATA_READY 通知主控板
+             *   2. 拉低 DATA_READY 通知主控板 (低电平有效)
              *   3. 等待主控板发起 SPI 读取
-             *   4. 拉低 DATA_READY
+             *   4. 拉高 DATA_READY 恢复空闲
              */
             bool ok = g_spiSlave.sendFrame(
                 frame.data,

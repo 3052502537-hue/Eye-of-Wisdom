@@ -94,7 +94,7 @@
 #define PIN_SPI_SCLK        40         /* SPI 时钟 (主机输出) */
 #define PIN_SPI_CS          39         /* SPI 片选 (低电平有效，主机控制) */
 
-#define SPI_HOST_DEVICE     SPI2_HOST  /* 使用的 SPI 主机号 (FSPI) */
+#define SPI_HOST_DEVICE     SPI3_HOST  /* 使用的 SPI 主机号 (HSPI=SPI3, 避开PSRAM可能占用的SPI2) */
 #define SPI_MODE            0          /* SPI 模式 (Mode0: CPOL=0, CPHA=0) */
 #define SPI_MAX_TRANSFER    4096       /* SPI 单次最大传输字节数 (受 DMA 限制) */
 
@@ -104,9 +104,9 @@
  *    主控板读取完成后，摄像头板拉低此引脚
  *
  *  信号时序:
- *    1. 摄像头采集一帧 → DATA_READY 拉高
- *    2. 主控检测到 DATA_READY 高电平 → 发起 SPI 读取
- *    3. SPI 传输完成 → DATA_READY 拉低
+ *    1. 摄像头采集一帧 → DATA_READY 拉低 (低电平有效)
+ *    2. 主控检测到 DATA_READY 下降沿 → 发起 SPI 读取
+ *    3. SPI 传输完成 → DATA_READY 拉高 (恢复空闲)
  *    4. 等待下一帧采集完成，重复
  * ============================================================ */
 

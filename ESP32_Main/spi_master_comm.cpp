@@ -76,8 +76,10 @@ bool SpiMasterComm::begin()
         return false;
     }
 
-    /* 创建 FSPI 实例并初始化引脚 */
-    _spi = new SPIClass(FSPI);
+    /* 创建 SPI 实例并初始化引脚
+     * 注意: 必须用 HSPI(SPI3_HOST), 不可用 FSPI(SPI2_HOST)!
+     *       N16R8的OPI PSRAM独占SPI2, 若用FSPI会破坏PSRAM导致全系统崩溃 */
+    _spi = new SPIClass(HSPI);
     _spi->begin(PIN_SPI_SCK, PIN_SPI_MISO, PIN_SPI_MOSI, PIN_SPI_CS);
 
     /* CS 引脚配置为输出，默认拉高(空闲) */
