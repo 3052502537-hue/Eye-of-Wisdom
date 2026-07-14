@@ -56,6 +56,9 @@ public class AppConfig {
     /** 风险播报模式：仅播报风险等级 */
     public static final int MODE_RISK_ONLY = 3;
 
+    /** 调试模式：ESP32 端使用，输出全部传感器原始数据 */
+    public static final int MODE_DEBUG = 4;
+
     // ==================== 风险等级定义 ====================
 
     /** 安全：前方无障碍或距离较远 */
@@ -102,8 +105,14 @@ public class AppConfig {
     /** TFLite 模型文件名（位于 assets 目录） */
     public static final String TFLITE_MODEL_FILE = "blind_guide_model.tflite";
 
-    /** 模型输入图像尺寸（像素） */
-    public static final int TFLITE_INPUT_SIZE = 224;
+    /** 模型输入图像尺寸（像素），YOLOv8-Nano 标准输入 */
+    public static final int TFLITE_INPUT_SIZE = 416;
+
+    /** 目标检测模型最大检测数量 */
+    public static final int MAX_DETECTIONS = 25;
+
+    /** 目标检测置信度阈值，低于此值的检测结果将被过滤 */
+    public static final float DETECTION_SCORE_THRESHOLD = 0.5f;
 
     // ==================== 开发者模式 ====================
 
@@ -262,6 +271,8 @@ public class AppConfig {
                 return "自动模式";
             case MODE_RISK_ONLY:
                 return "风险播报模式";
+            case MODE_DEBUG:
+                return "调试模式";
             default:
                 return "未知模式";
         }

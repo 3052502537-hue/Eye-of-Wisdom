@@ -190,9 +190,9 @@ public class MainFragment extends Fragment implements ObstacleAnalyzer.OnAnalysi
         super.onActivityCreated(savedInstanceState);
         activity = (MainActivity) getActivity();
 
-        // 注册避障分析结果回调
+        // 注册避障分析结果回调（使用 add 避免覆盖其他监听器）
         if (activity != null && activity.getAnalyzer() != null) {
-            activity.getAnalyzer().setOnAnalysisResultListener(this);
+            activity.getAnalyzer().addOnAnalysisResultListener(this);
         }
 
         // 注册 TCP 连接状态回调

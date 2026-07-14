@@ -2,22 +2,17 @@
  * ============================================================================
  * 文件名: DebugFragment.java
  * 功能描述:
- *   - 调试页面 Fragment（默认隐藏，开发者模式激活后可见）
- *   - 显示 TCP 接收的原始传感器数据
- *   - 显示 UDP 接收的图像帧
- *   - 显示 TFLite 识别结果和置信度
- *   - 显示运行日志（连接状态、错误信息等）
- *   - 提供网络统计、帧率、丢包率等调试信息
+ *   - 开发者调试页面 Fragment（连续点击标题5次激活）
+ *   - 通过 DebugDataListener 接口从 MainActivity 获取数据（不覆盖主回调）
+ *   - 视频预览：DetectionOverlayView 显示 JPEG + AI 检测框叠加
+ *   - 原始传感器数据：激光/前后雷达的驱动层原始输出
+ *   - 处理后数据：危险等级/最近距离/防抖状态/避障建议/视觉检测数量
+ *   - 网络统计：TCP状态/UDP帧数/丢包率
+ *   - 运行日志：带时间戳的调试信息
  * 依赖关系:
- *   - 依赖 MainActivity 提供核心组件
- *   - 依赖 TCPClient、UDPReceiver 网络数据
- *   - 依赖 TFLiteClassifier 识别结果
- *   - 依赖 ObstacleAnalyzer 分析结果
- * 接口说明:
- *   - onCreateView: 加载布局
- *   - updateSensorData: 更新传感器数据显示
- *   - updateImageFrame: 更新图像显示
- *   - appendLog: 追加日志信息
+ *   - 实现 MainActivity.DebugDataListener 接口
+ *   - 依赖 DetectionOverlayView 自定义 View
+ *   - 依赖 AppConfig 读取阈值配置
  * ============================================================================
  */
 package com.smarteye.blindguide.ui;
@@ -30,7 +25,6 @@ import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.Button;
-import android.widget.ImageView;
 import android.widget.ScrollView;
 import android.widget.TextView;
 
@@ -44,50 +38,55 @@ import com.smarteye.blindguide.ai.TFLiteClassifier;
 import com.smarteye.blindguide.data.AppConfig;
 import com.smarteye.blindguide.logic.ObstacleAnalyzer;
 import com.smarteye.blindguide.network.Protocol;
-import com.smarteye.blindguide.network.TCPClient;
 import com.smarteye.blindguide.network.UDPReceiver;
 
 import java.text.SimpleDateFormat;
 import java.util.Date;
+import java.util.List;
 import java.util.Locale;
 
 /**
- * 调试页面 Fragment
- * 显示原始数据、图像、日志等调试信息
+ * 开发者调试页面 Fragment
+ * 通过 DebugDataListener 获取数据，不覆盖主业务回调
  */
-public class DebugFragment extends Fragment {
+public class DebugFragment extends Fragment implements MainActivity.DebugDataListener {
 
-    /** 原始传感器数据显示 */
-    private TextView textRawSensor;
+    // ==================== 视图引用 ====================
 
-    /** 图像显示 */
-    private ImageView imagePreview;
+    /** 视频预览 + AI 检测框叠加 */
+    private DetectionOverlayView detectionOverlay;
 
-    /** 识别结果显示 */
-    private TextView textClassifyResult;
+    /** 帧信息 */
+    private TextView textFrameInfo;
 
-    /** 避障分析结果显示 */
-    private TextView textAnalysisResult;
+    /** 原始传感器数据 */
+    private TextView textRawLaser;
+    private TextView textRawRadarFront;
+    private TextView textRawRadarRear;
+    private TextView textRawTimestamp;
 
-    /** 网络统计信息 */
+    /** 处理后数据 */
+    private TextView textDangerLevel;
+    private TextView textMinDistance;
+    private TextView textDebounceInfo;
+    private TextView textAdvice;
+    private TextView textDetectionCount;
+
+    /** 网络统计 */
     private TextView textNetworkStats;
 
-    /** 日志显示 */
+    /** 日志 */
     private TextView textLog;
-
-    /** 日志滚动容器 */
     private ScrollView scrollLog;
-
-    /** 清空日志按钮 */
     private Button btnClearLog;
-
-    /** 重置统计按钮 */
     private Button btnResetStats;
+
+    // ==================== 状态数据 ====================
 
     /** MainActivity 引用 */
     private MainActivity activity;
 
-    /** 主线程 Handler，用于更新 UI */
+    /** 主线程 Handler */
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
 
     /** 时间格式化 */
@@ -100,27 +99,53 @@ public class DebugFragment extends Fragment {
     /** 日志缓冲区 */
     private final StringBuilder logBuilder = new StringBuilder();
 
+    /** 帧率统计 */
+    private long lastFrameTime = 0;
+    private int frameCountSinceLastUpdate = 0;
+    private float currentFps = 0;
+
+    /** 最近一次传感器数据（用于处理后数据显示） */
+    private Protocol.SensorData lastSensorData;
+
+    /** 最近一次识别结果 */
+    private TFLiteClassifier.ClassifyResult lastClassifyResult;
+
+    // ==================== 生命周期 ====================
+
     @Override
     public View onCreateView(@NonNull LayoutInflater inflater, @Nullable ViewGroup container,
                              @Nullable Bundle savedInstanceState) {
         View view = inflater.inflate(R.layout.fragment_debug, container, false);
-
         bindViews(view);
         setupListeners();
-
         return view;
     }
 
     /**
      * 绑定视图
-     * @param view 根视图
      */
     private void bindViews(View view) {
-        textRawSensor = view.findViewById(R.id.text_raw_sensor);
-        imagePreview = view.findViewById(R.id.image_preview);
-        textClassifyResult = view.findViewById(R.id.text_classify_result);
-        textAnalysisResult = view.findViewById(R.id.text_analysis_result);
+        // 视频预览
+        detectionOverlay = view.findViewById(R.id.detection_overlay);
+        textFrameInfo = view.findViewById(R.id.text_frame_info);
+
+        // 原始传感器数据
+        textRawLaser = view.findViewById(R.id.text_raw_laser);
+        textRawRadarFront = view.findViewById(R.id.text_raw_radar_front);
+        textRawRadarRear = view.findViewById(R.id.text_raw_radar_rear);
+        textRawTimestamp = view.findViewById(R.id.text_raw_timestamp);
+
+        // 处理后数据
+        textDangerLevel = view.findViewById(R.id.text_danger_level);
+        textMinDistance = view.findViewById(R.id.text_min_distance);
+        textDebounceInfo = view.findViewById(R.id.text_debounce_info);
+        textAdvice = view.findViewById(R.id.text_advice);
+        textDetectionCount = view.findViewById(R.id.text_detection_count);
+
+        // 网络统计
         textNetworkStats = view.findViewById(R.id.text_network_stats);
+
+        // 日志
         textLog = view.findViewById(R.id.text_log);
         scrollLog = view.findViewById(R.id.scroll_log);
         btnClearLog = view.findViewById(R.id.btn_clear_log);
@@ -128,17 +153,15 @@ public class DebugFragment extends Fragment {
     }
 
     /**
-     * 设置监听器
+     * 设置按钮监听器
      */
     private void setupListeners() {
-        // 清空日志按钮
         btnClearLog.setOnClickListener(v -> {
             logBuilder.setLength(0);
             textLog.setText("");
             appendLog("日志已清空");
         });
 
-        // 重置统计按钮
         btnResetStats.setOnClickListener(v -> {
             if (activity != null && activity.getUdpReceiver() != null) {
                 activity.getUdpReceiver().resetStatistics();
@@ -152,188 +175,256 @@ public class DebugFragment extends Fragment {
     public void onActivityCreated(@Nullable Bundle savedInstanceState) {
         super.onActivityCreated(savedInstanceState);
         activity = (MainActivity) getActivity();
+    }
 
-        registerCallbacks();
+    @Override
+    public void onResume() {
+        super.onResume();
+        // 注册为调试数据监听器（不覆盖主回调）
+        if (activity != null) {
+            activity.addDebugDataListener(this);
+        }
+        updateNetworkStats();
         appendLog("调试页面已就绪");
+        appendLog("监听模式: 附加监听 (主回调不受影响)");
     }
 
-    /**
-     * 注册各种数据回调
-     */
-    private void registerCallbacks() {
-        if (activity == null) return;
-
-        // TCP 原始数据回调
-        if (activity.getTcpClient() != null) {
-            activity.getTcpClient().setOnSensorDataListener(new TCPClient.OnSensorDataListener() {
-                @Override
-                public void onSensorData(Protocol.SensorData data) {
-                    updateSensorData(data);
-                }
-
-                @Override
-                public void onRawData(String rawJson) {
-                    appendLog("TCP: " + rawJson);
-                }
-            });
-
-            // 连接状态回调
-            activity.getTcpClient().setOnConnectionStateListener((state, message) -> {
-                appendLog("TCP状态: " + message);
-            });
-        }
-
-        // UDP 图像帧回调
-        if (activity.getUdpReceiver() != null) {
-            activity.getUdpReceiver().setOnImageFrameListener(frame -> {
-                updateImageFrame(frame);
-                updateNetworkStats();
-            });
-
-            activity.getUdpReceiver().setOnReceiveStateListener((state, message) -> {
-                appendLog("UDP状态: " + message);
-            });
-        }
-
-        // 避障分析结果回调
-        if (activity.getAnalyzer() != null) {
-            activity.getAnalyzer().setOnAnalysisResultListener(new ObstacleAnalyzer.OnAnalysisResultListener() {
-                @Override
-                public void onResult(ObstacleAnalyzer.AnalysisResult result) {
-                    updateAnalysisResult(result);
-                }
-
-                @Override
-                public void onRiskChanged(int newRisk, int oldRisk) {
-                    appendLog("风险变化: " + oldRisk + " -> " + newRisk);
-                }
-            });
+    @Override
+    public void onPause() {
+        super.onPause();
+        // 注销调试数据监听器
+        if (activity != null) {
+            activity.removeDebugDataListener(this);
         }
     }
 
-    /**
-     * 更新传感器数据显示
-     * @param data 传感器数据
-     */
-    private void updateSensorData(Protocol.SensorData data) {
+    // ==================== DebugDataListener 接口实现 ====================
+
+    @Override
+    public void onSensorData(Protocol.SensorData data) {
+        this.lastSensorData = data;
         mainHandler.post(() -> {
+            updateRawSensorData(data);
+            updateProcessedData(data, null);
+            updateNetworkStats();
+        });
+    }
+
+    @Override
+    public void onImageFrame(Protocol.ImageFrame frame) {
+        mainHandler.post(() -> {
+            updateVideoPreview(frame);
+            updateFrameRate();
+        });
+    }
+
+    @Override
+    public void onClassifyResult(TFLiteClassifier.ClassifyResult result) {
+        this.lastClassifyResult = result;
+        mainHandler.post(() -> {
+            // 更新检测框叠加层
+            if (result.hasDetections()) {
+                detectionOverlay.setDetections(result.detections);
+            }
+            // 更新处理后数据中的视觉检测信息
+            updateProcessedData(lastSensorData, result);
+        });
+    }
+
+    @Override
+    public void onAnalysisResult(ObstacleAnalyzer.AnalysisResult result) {
+        mainHandler.post(() -> {
+            updateAnalysisResult(result);
+        });
+    }
+
+    // ==================== 数据更新方法 ====================
+
+    /**
+     * 更新视频预览
+     */
+    private void updateVideoPreview(Protocol.ImageFrame frame) {
+        try {
+            if (frame.jpegData != null && frame.jpegData.length > 0) {
+                // 解码 JPEG 并设置到底图
+                detectionOverlay.setImageBitmap(
+                        BitmapFactory.decodeByteArray(frame.jpegData, 0, frame.jpegData.length));
+
+                // 更新帧信息
+                textFrameInfo.setText(String.format("帧#%d | %.1f fps",
+                        frame.frameNumber, currentFps));
+            }
+        } catch (Exception e) {
+            appendLog("视频解码失败: " + e.getMessage());
+        }
+    }
+
+    /**
+     * 计算并更新帧率
+     */
+    private void updateFrameRate() {
+        long now = System.currentTimeMillis();
+        frameCountSinceLastUpdate++;
+
+        if (lastFrameTime == 0) {
+            lastFrameTime = now;
+            return;
+        }
+
+        long elapsed = now - lastFrameTime;
+        if (elapsed >= 1000) { // 每秒更新一次帧率
+            currentFps = frameCountSinceLastUpdate * 1000f / elapsed;
+            frameCountSinceLastUpdate = 0;
+            lastFrameTime = now;
+        }
+    }
+
+    /**
+     * 更新原始传感器数据显示
+     */
+    private void updateRawSensorData(Protocol.SensorData data) {
+        // 激光原始数据
+        textRawLaser.setText(String.format("激光测距: %.2f m | 电池: %d%% | 模式: %s",
+                data.laser_front, data.battery, AppConfig.getModeName(data.mode)));
+
+        // 前雷达原始数据
+        if (data.radar_front != null) {
+            textRawRadarFront.setText(String.format(
+                    "前雷达: 距离=%.2fm | 速度=%.2fm/s | 角度=%.1f°",
+                    data.radar_front.dist, data.radar_front.speed, data.radar_front.angle));
+        } else {
+            textRawRadarFront.setText("前雷达: 无数据");
+        }
+
+        // 后雷达原始数据
+        if (data.radar_back != null) {
+            textRawRadarRear.setText(String.format(
+                    "后雷达: 距离=%.2fm | 速度=%.2fm/s | 角度=%.1f°",
+                    data.radar_back.dist, data.radar_back.speed, data.radar_back.angle));
+        } else {
+            textRawRadarRear.setText("后雷达: 无数据");
+        }
+
+        // 时间戳
+        textRawTimestamp.setText(String.format("帧时间戳: %s | ESP32 level=%d img=%d",
+                timeFormat.format(new Date(data.timestamp)), data.level, data.img));
+    }
+
+    /**
+     * 更新处理后数据（从传感器+视觉结果综合计算）
+     */
+    private void updateProcessedData(Protocol.SensorData data,
+                                     TFLiteClassifier.ClassifyResult classifyResult) {
+        if (data == null) return;
+
+        // 计算最近距离
+        float minDist = Float.MAX_VALUE;
+        String distSource = "无";
+        if (data.laser_front > 0) {
+            minDist = data.laser_front;
+            distSource = "激光";
+        }
+        if (data.radar_front != null && data.radar_front.dist > 0
+                && data.radar_front.dist < minDist) {
+            minDist = data.radar_front.dist;
+            distSource = "前雷达";
+        }
+
+        // 危险等级（优先使用 ESP32 发送的 level，其次本地计算）
+        String dangerText;
+        int dangerColor;
+        int level = data.level;
+        if (minDist < AppConfig.DISTANCE_DANGER || level == 2) {
+            dangerText = "⚠ 危险 (DANGER)";
+            dangerColor = 0xFFF44336;
+        } else if (minDist < AppConfig.DISTANCE_CAUTION || level == 1) {
+            dangerText = "⚡ 注意 (CAUTION)";
+            dangerColor = 0xFFFF9800;
+        } else {
+            dangerText = "✅ 安全 (SAFE)";
+            dangerColor = 0xFF4CAF50;
+        }
+
+        textDangerLevel.setText("危险等级: " + dangerText);
+        textDangerLevel.setTextColor(dangerColor);
+
+        // 最近距离
+        if (minDist < Float.MAX_VALUE) {
+            textMinDistance.setText(String.format("最近距离: %.2f m (来源: %s)", minDist, distSource));
+        } else {
+            textMinDistance.setText("最近距离: 无有效数据");
+        }
+
+        // 防抖状态（ESP32 侧 WARN_DEBOUNCE_FRAMES=3）
+        if (level >= 2) {
+            textDebounceInfo.setText("防抖状态: DANGER已确认 (需3帧连续)");
+        } else {
+            textDebounceInfo.setText("防抖状态: 正常 (未触发DANGER防抖)");
+        }
+
+        // 视觉检测数量
+        if (classifyResult != null && classifyResult.hasDetections()) {
+            List<TFLiteClassifier.DetectedObject> dets = classifyResult.detections;
             StringBuilder sb = new StringBuilder();
-            sb.append("=== 传感器数据 ===\n");
-            sb.append(String.format("时间: %s\n",
-                    timeFormat.format(new Date(data.timestamp))));
-            sb.append(String.format("前方激光: %.2f 米\n", data.laser_front));
-
-            if (data.radar_front != null) {
-                sb.append(String.format("前方雷达: %s\n", data.radar_front.toString()));
+            sb.append("视觉检测: ").append(dets.size()).append("个目标");
+            for (TFLiteClassifier.DetectedObject det : dets) {
+                sb.append(String.format("\n  %s %.0f%% [%.2f,%.2f]",
+                        det.className, det.confidence * 100, det.centerX, det.centerY));
             }
-            if (data.radar_back != null) {
-                sb.append(String.format("后方雷达: %s\n", data.radar_back.toString()));
-            }
-
-            sb.append(String.format("电池电量: %d%%\n", data.battery));
-            sb.append(String.format("工作模式: %s\n", AppConfig.getModeName(data.mode)));
-
-            textRawSensor.setText(sb.toString());
-        });
+            textDetectionCount.setText(sb.toString());
+        } else if (classifyResult != null) {
+            textDetectionCount.setText(String.format("视觉检测: 0个目标 (最高: %s %.0f%%)",
+                    classifyResult.className, classifyResult.confidence * 100));
+        } else {
+            textDetectionCount.setText("视觉检测: 等待模型推理...");
+        }
     }
 
     /**
-     * 更新图像显示
-     * @param frame 图像帧
-     */
-    private void updateImageFrame(Protocol.ImageFrame frame) {
-        mainHandler.post(() -> {
-            try {
-                // 解码 JPEG 并显示
-                if (frame.jpegData != null && frame.jpegData.length > 0) {
-                    imagePreview.setImageBitmap(
-                            BitmapFactory.decodeByteArray(frame.jpegData, 0, frame.jpegData.length));
-                }
-            } catch (Exception e) {
-                appendLog("图像解码失败: " + e.getMessage());
-            }
-
-            // 调用 TFLite 识别并显示结果
-            if (activity != null && activity.getClassifier() != null
-                    && activity.getClassifier().isInitialized()) {
-                activity.getClassifier().classify(frame.jpegData,
-                        new TFLiteClassifier.OnClassifyResultListener() {
-                            @Override
-                            public void onResult(TFLiteClassifier.ClassifyResult result) {
-                                updateClassifyResult(result);
-                            }
-
-                            @Override
-                            public void onError(String error) {
-                                appendLog("识别错误: " + error);
-                            }
-                        });
-            }
-        });
-    }
-
-    /**
-     * 更新识别结果显示
-     * @param result 识别结果
-     */
-    private void updateClassifyResult(TFLiteClassifier.ClassifyResult result) {
-        mainHandler.post(() -> {
-            StringBuilder sb = new StringBuilder();
-            sb.append("=== 视觉识别 ===\n");
-            sb.append(String.format("类别: %s\n", result.className));
-            sb.append(String.format("置信度: %.2f%%\n", result.confidence * 100));
-            sb.append(String.format("耗时: %d ms\n", result.inferenceTime));
-
-            if (result.probabilities != null) {
-                sb.append("--- 各类别概率 ---\n");
-                java.util.List<String> labels = activity.getClassifier().getLabels();
-                for (int i = 0; i < result.probabilities.length && i < labels.size(); i++) {
-                    sb.append(String.format("%s: %.2f%%\n",
-                            labels.get(i), result.probabilities[i] * 100));
-                }
-            }
-
-            textClassifyResult.setText(sb.toString());
-        });
-    }
-
-    /**
-     * 更新避障分析结果显示
-     * @param result 分析结果
+     * 更新避障分析结果
      */
     private void updateAnalysisResult(ObstacleAnalyzer.AnalysisResult result) {
-        mainHandler.post(() -> {
-            StringBuilder sb = new StringBuilder();
-            sb.append("=== 避障分析 ===\n");
-            sb.append(String.format("风险等级: %s\n", AppConfig.getRiskName(result.riskLevel)));
-            sb.append(String.format("障碍物: %s\n", result.obstacleDescription));
-            sb.append(String.format("建议: %s\n", result.suggestedDirection));
-            sb.append(String.format("置信度: %.2f\n", result.confidence));
+        if (result == null) return;
 
-            textAnalysisResult.setText(sb.toString());
-        });
+        // 避障建议
+        if (result.adviceText != null && !result.adviceText.isEmpty()) {
+            textAdvice.setText("避障建议: " + result.adviceText);
+        }
+
+        // 从分析结果更新一些处理后的信息
+        if (result.obstacleDescription != null && !result.obstacleDescription.isEmpty()) {
+            // 障碍物描述可以补充显示
+        }
     }
 
     /**
      * 更新网络统计信息
      */
     private void updateNetworkStats() {
-        mainHandler.post(() -> {
-            if (activity == null || activity.getUdpReceiver() == null) return;
+        if (activity == null) return;
 
+        StringBuilder sb = new StringBuilder();
+
+        // TCP 状态
+        if (activity.getTcpClient() != null) {
+            boolean connected = activity.getTcpClient().isConnected();
+            sb.append("TCP: ").append(connected ? "🟢 已连接" : "🔴 未连接").append("\n");
+        }
+
+        // UDP 统计
+        if (activity.getUdpReceiver() != null) {
             UDPReceiver udp = activity.getUdpReceiver();
-            StringBuilder sb = new StringBuilder();
-            sb.append("=== 网络统计 ===\n");
-            sb.append(String.format("TCP状态: %s\n",
-                    activity.getTcpClient() != null && activity.getTcpClient().isConnected()
-                            ? "已连接" : "未连接"));
-            sb.append(String.format("UDP接收帧数: %d\n", udp.getFrameCount()));
-            sb.append(String.format("UDP丢包数: %d\n", udp.getLostPackets()));
-            sb.append(String.format("丢包率: %.2f%%\n", udp.getPacketLossRate() * 100));
+            sb.append(String.format("UDP帧数: %d | 丢包: %d | 丢包率: %.1f%% | 帧率: %.1f fps",
+                    udp.getFrameCount(), udp.getLostPackets(),
+                    udp.getPacketLossRate() * 100, currentFps));
+        } else {
+            sb.append("UDP: 未启动");
+        }
 
-            textNetworkStats.setText(sb.toString());
-        });
+        textNetworkStats.setText(sb.toString());
     }
+
+    // ==================== 日志方法 ====================
 
     /**
      * 追加日志信息
@@ -345,7 +436,7 @@ public class DebugFragment extends Fragment {
             logBuilder.append("[").append(timestamp).append("] ")
                     .append(log).append("\n");
 
-            // 限制日志行数，避免内存溢出
+            // 限制日志行数
             String[] lines = logBuilder.toString().split("\n");
             if (lines.length > MAX_LOG_LINES) {
                 logBuilder.setLength(0);
@@ -358,11 +449,5 @@ public class DebugFragment extends Fragment {
             // 滚动到底部
             scrollLog.post(() -> scrollLog.fullScroll(ScrollView.FOCUS_DOWN));
         });
-    }
-
-    @Override
-    public void onResume() {
-        super.onResume();
-        updateNetworkStats();
     }
 }

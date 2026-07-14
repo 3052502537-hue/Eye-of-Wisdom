@@ -57,7 +57,6 @@ SpiSlaveComm   g_spiSlave;            /* SPI 从机通信对象 */
  *  全局变量声明
  * ============================================================ */
 static bool          g_systemReady = false;   /* 系统就绪标志 */
-static SemaphoreHandle_t g_frameSem = NULL;   /* 帧就绪信号量 */
 
 /* FreeRTOS 任务句柄 */
 static TaskHandle_t  g_taskCamCapture = NULL; /* 摄像头采集任务 */
@@ -312,12 +311,6 @@ void setup()
     DBG_PRINTLN("  开发板: ESP32-S3-WROOM");
     DBG_PRINTLN("  摄像头: OV2640 VGA JPEG");
     DBG_PRINTLN("============================================");
-
-    /* --- 创建帧就绪信号量 --- */
-    g_frameSem = xSemaphoreCreateBinary();
-    if (!g_frameSem) {
-        DBG_PRINTLN("[Main] 信号量创建失败!");
-    }
 
     /* --- 创建帧传输队列 --- */
     g_frameQueue = xQueueCreate(FRAME_QUEUE_LENGTH, sizeof(TransferFrame_t));

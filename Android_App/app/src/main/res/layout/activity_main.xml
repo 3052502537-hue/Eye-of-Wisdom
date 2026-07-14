@@ -39,8 +39,6 @@
         android:background="#1565C0"
         app:itemTextColor="#FFFFFF"
         app:itemIconTint="#FFFFFF"
-        app:itemTextSizeActive="18sp"
-        app:itemTextSizeInactive="16sp"
         app:labelVisibilityMode="labeled"
         app:menu="@menu/bottom_nav_menu"
         app:layout_constraintBottom_toBottomOf="parent"

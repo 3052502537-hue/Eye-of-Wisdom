@@ -1,0 +1,41 @@
+<!--
+============================================================================
+文件名: themes.xml
+功能描述:
+  - Material 3 主题定义
+  - 日间/夜间模式自适应
+  - 被 AndroidManifest.xml 通过 @style/Theme.Material3.DayNight 引用
+============================================================================
+-->
+<resources>
+    <!-- 基础 Material 3 日夜间主题 -->
+    <style name="Theme.Material3.DayNight" parent="Theme.Material3.DayNight.NoActionBar">
+        <!-- 主色调（蓝色系，代表科技与信任） -->
+        <item name="colorPrimary">@color/primary</item>
+        <item name="colorOnPrimary">@color/on_primary</item>
+        <item name="colorPrimaryContainer">@color/primary_container</item>
+        <item name="colorOnPrimaryContainer">@color/on_primary_container</item>
+
+        <!-- 辅色调（青色系） -->
+        <item name="colorSecondary">@color/secondary</item>
+        <item name="colorOnSecondary">@color/on_secondary</item>
+        <item name="colorSecondaryContainer">@color/secondary_container</item>
+        <item name="colorOnSecondaryContainer">@color/on_secondary_container</item>
+
+        <!-- 背景色 -->
+        <item name="android:colorBackground">@color/background</item>
+        <item name="colorOnBackground">@color/on_background</item>
+
+        <!-- 表面色 -->
+        <item name="colorSurface">@color/surface</item>
+        <item name="colorOnSurface">@color/on_surface</item>
+
+        <!-- 错误色 -->
+        <item name="colorError">@color/error</item>
+        <item name="colorOnError">@color/on_error</item>
+
+        <!-- 状态栏透明（边缘到边缘显示） -->
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+    </style>
+</resources>

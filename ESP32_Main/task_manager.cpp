@@ -60,50 +60,6 @@ bool TaskManager::begin()
     return true;
 }
 
-/* initAll - 初始化所有模块驱动 */
-bool TaskManager::initAll()
-{
-    bool ok = true;
-
-    /* 初始化激光测距(UART1) */
-    if (!_sdm10.begin()) {
-        DBG_PRINTLN("[TM] SDM10 init fail");
-        ok = false;
-    }
-
-    /* 初始化前向雷达(UART2) */
-    if (!_radarFront.begin(RADAR_FRONT_UART, PIN_RADAR_FRONT_TX,
-                           PIN_RADAR_FRONT_RX, RADAR_BAUDRATE)) {
-        DBG_PRINTLN("[TM] radar front init fail");
-        ok = false;
-    }
-
-    /* 初始化后向雷达(UART0) */
-    if (!_radarRear.begin(RADAR_REAR_UART, PIN_RADAR_REAR_TX,
-                          PIN_RADAR_REAR_RX, RADAR_BAUDRATE)) {
-        DBG_PRINTLN("[TM] radar rear init fail");
-        ok = false;
-    }
-
-    /* 初始化SPI主机 */
-    if (!_spi.begin()) {
-        DBG_PRINTLN("[TM] SPI init fail");
-        ok = false;
-    }
-
-    /* 初始化WiFi */
-    if (!_wifi.begin()) {
-        DBG_PRINTLN("[TM] WiFi init fail");
-        ok = false;
-    }
-
-    /* 初始化Web服务器 */
-    _web.begin();
-
-    DBG_PRINTF("[TM] initAll %s\n", ok ? "OK" : "PARTIAL");
-    return ok;
-}
-
 /* startTasks - 创建并启动5个任务 */
 bool TaskManager::startTasks()
 {
@@ -166,7 +122,18 @@ bool TaskManager::getSensorFrame(SensorFrame_t* outFrame)
     return false;
 }
 
-/* evaluateDanger - 危险等级判断(3级: SAFE/CAUTION/DANGER, 与APP一致) */
+/* evaluateDanger - 危险等级判断(3级: SAFE/CAUTION/DANGER, 与APP一致)
+ *
+ * 阈值逻辑:
+ *   minDist < WARN_DISTANCE_DANGER (1.0m)  → DANGER
+ *   minDist < WARN_DISTANCE_WARNING(2.5m)  → CAUTION
+ *   minDist ≥ 2.5m                          → SAFE
+ *
+ * 注意: WARN_DISTANCE_ATTENTION(3.0m) 为预留阈值, 当前3级系统中未使用,
+ *       未来扩展4级预警时可作为"注意"级别边界.
+ *
+ * 融合策略: 优先激光(精确), 雷达辅助(运动目标)
+ */
 DangerLevel_t TaskManager::evaluateDanger(const SensorFrame_t* frame)
 {
     if (!frame) return LEVEL_SAFE;
@@ -184,9 +151,9 @@ DangerLevel_t TaskManager::evaluateDanger(const SensorFrame_t* frame)
     }
 
     /* 按阈值判断等级(3级, 与APP AppConfig.java 一致) */
-    if (minDist < WARN_DISTANCE_DANGER)    return LEVEL_DANGER;   // < 1.0m
-    if (minDist < WARN_DISTANCE_ATTENTION) return LEVEL_CAUTION;  // < 3.0m
-    return LEVEL_SAFE;                                             // > 3.0m
+    if (minDist < WARN_DISTANCE_DANGER)    return LEVEL_DANGER;   // < 1.0m → 危险
+    if (minDist < WARN_DISTANCE_WARNING)   return LEVEL_CAUTION;  // < 2.5m → 注意
+    return LEVEL_SAFE;                                             // ≥ 2.5m → 安全
 }
 
 /* ============================================================
@@ -335,15 +302,19 @@ void TaskManager::taskDecision(void* arg)
         if (self->getSensorFrame(&f)) {
             DangerLevel_t level = self->evaluateDanger(&f);
 
-            /* 危险等级防抖: 连续N帧确认 */
+            /* 危险等级防抖: 连续N帧DANGER才确认, 单帧降级为CAUTION */
             if (level >= LEVEL_DANGER) {
                 if (dangerCount < 255) dangerCount++;
             } else {
                 dangerCount = 0;
             }
 
-            DangerLevel_t finalLevel = (dangerCount >= WARN_DEBOUNCE_FRAMES)
-                                       ? LEVEL_DANGER : level;
+            /* 未达到确认帧数前, 压制DANGER→CAUTION (防止单帧噪声误触发) */
+            if (level >= LEVEL_DANGER && dangerCount < WARN_DEBOUNCE_FRAMES) {
+                level = LEVEL_CAUTION;
+            }
+
+            DangerLevel_t finalLevel = level;
 
             /* 更新共享帧中的等级(加锁) */
             if (xSemaphoreTake(self->_mutex, 5)) {
@@ -397,7 +368,12 @@ void TaskManager::taskWeb(void* arg)
         if (self->_web.isCalibrateRequested()) {
             self->_web.clearCalibrateRequest();
             DBG_PRINTLN("[TM] web calibrate triggered");
-            /* TODO: 执行实际校准流程 */
+            /* 执行传感器自检作为校准流程 */
+            bool laserOk = self->_sdm10.selfTest();
+            bool radarOk = self->_radarFront.selfTest();
+            DBG_PRINTF("[TM] calibrate result: laser=%s radar=%s\n",
+                       laserOk ? "OK" : "FAIL", radarOk ? "OK" : "FAIL");
+            self->_alarm.setSystemState(laserOk ? SYS_STATE_NORMAL : SYS_STATE_FAULT);
         }
         if (self->_web.isRebootRequested()) {
             self->_web.clearRebootRequest();

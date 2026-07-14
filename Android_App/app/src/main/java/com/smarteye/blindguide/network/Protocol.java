@@ -54,10 +54,10 @@ public class Protocol {
     /** 重启设备 */
     public static final String ACTION_REBOOT = "reboot";
 
-    // ==================== UDP 图像包协议 ====================
+    // ==================== UDP 图像包协议(与ESP32固件 protocol.h UdpImgHeader_t 一致) ====================
 
-    /** UDP 图像包头部长度（字节）：4字节帧号 + 4字节总长度 + 4字节当前包长度 */
-    public static final int UDP_IMAGE_HEADER_SIZE = 12;
+    /** UDP 图像包头部长度（字节）：4B帧号 + 2B分片序号 + 2B总分片数 + 2B数据长度 = 10字节 */
+    public static final int UDP_IMAGE_HEADER_SIZE = 10;
 
     /**
      * 雷达数据结构
@@ -113,8 +113,14 @@ public class Protocol {
         /** 电池电量百分比（0-100） */
         public int battery;
 
-        /** 当前工作模式（1-3） */
+        /** 当前工作模式（1-4） */
         public int mode;
+
+        /** ESP32 决策任务输出的危险等级 (0=SAFE, 1=CAUTION, 2=DANGER) */
+        public int level;
+
+        /** ESP32 是否有新图像帧可用 (0/1) */
+        public int img;
 
         /** 接收时间戳（毫秒） */
         public transient long timestamp;
@@ -206,7 +212,7 @@ public class Protocol {
     }
 
     /**
-     * 构建控制命令 JSON 字符串
+     * 构建控制命令 JSON 字符串（通用格式，兼容旧代码）
      * @param action 命令动作常量（如 ACTION_SET_MODE）
      * @param value 命令值
      * @return JSON 字符串
@@ -214,6 +220,75 @@ public class Protocol {
     public static String buildCommand(String action, int value) {
         Command cmd = new Command(action, value);
         return gson.toJson(cmd);
+    }
+
+    // ==================== ESP32 兼容命令构建方法 ====================
+    // ESP32 wifi_manager.cpp 使用 strstr() 简单关键字匹配解析命令，
+    // 以下方法生成 ESP32 可直接解析的 JSON 格式。
+
+    /**
+     * 构建设置模式命令（ESP32 兼容格式）
+     * ESP32 解析: strstr("set_mode") 匹配类型, strstr("\"mode\":") 取值
+     * @param mode 模式值 (1-4)
+     * @return JSON 字符串 "{\"cmd\":\"set_mode\",\"mode\":N}"
+     */
+    public static String buildSetModeCommand(int mode) {
+        return "{\"cmd\":\"set_mode\",\"mode\":" + mode + "}";
+    }
+
+    /**
+     * 构建设置预警阈值命令（ESP32 兼容格式）
+     * @param dAtt 注意距离（米）
+     * @param dWar 警告距离（米）
+     * @param dDan 危险距离（米）
+     * @return JSON 字符串
+     */
+    public static String buildSetWarnCommand(float dAtt, float dWar, float dDan) {
+        return "{\"cmd\":\"set_warn\",\"d_att\":" + dAtt
+                + ",\"d_war\":" + dWar + ",\"d_dan\":" + dDan + "}";
+    }
+
+    /**
+     * 构建设置图像参数命令（ESP32 兼容格式）
+     * @param res 分辨率 (0=QVGA, 1=VGA)
+     * @param quality JPEG 质量 (1-31)
+     * @return JSON 字符串
+     */
+    public static String buildSetImgCommand(int res, int quality) {
+        return "{\"cmd\":\"set_img\",\"res\":" + res + ",\"q\":" + quality + "}";
+    }
+
+    /**
+     * 构建蜂鸣器控制命令（ESP32 兼容格式）
+     * @param on true=开启, false=关闭
+     * @return JSON 字符串
+     */
+    public static String buildSetBuzzerCommand(boolean on) {
+        return "{\"cmd\":\"set_buzzer\",\"on\":" + (on ? 1 : 0) + "}";
+    }
+
+    /**
+     * 构建重启命令（ESP32 兼容格式）
+     * @return JSON 字符串 "{\"cmd\":\"reboot\"}"
+     */
+    public static String buildRebootCommand() {
+        return "{\"cmd\":\"reboot\"}";
+    }
+
+    /**
+     * 构建校准命令（ESP32 兼容格式）
+     * @return JSON 字符串 "{\"cmd\":\"calibrate\"}"
+     */
+    public static String buildCalibrateCommand() {
+        return "{\"cmd\":\"calibrate\"}";
+    }
+
+    /**
+     * 构建查询状态命令（ESP32 兼容格式）
+     * @return JSON 字符串 "{\"cmd\":\"query\"}"
+     */
+    public static String buildQueryStatusCommand() {
+        return "{\"cmd\":\"query\"}";
     }
 
     /**
@@ -225,8 +300,8 @@ public class Protocol {
     }
 
     /**
-     * 解析 UDP 图像数据包
-     * 协议格式: [4字节帧号][4字节JPEG总长度][4字节当前包长度][JPEG数据]
+     * 解析 UDP 图像数据包(与ESP32固件 UdpImgHeader_t 一致)
+     * 协议格式: [4B帧号LE][2B分片序号LE][2B总分片数LE][2B数据长度LE][JPEG数据]
      * @param buffer 接收到的字节数组
      * @param length 实际数据长度
      * @return ImageFrame 对象，解析失败返回 null
@@ -234,31 +309,36 @@ public class Protocol {
     public static ImageFrame parseImagePacket(byte[] buffer, int length) {
         try {
             if (length < UDP_IMAGE_HEADER_SIZE) {
-                // 数据长度不足头部大小，解析失败
                 return null;
             }
 
-            // 解析帧号（小端序）
+            // 帧号(4B LE)
             int frameNumber = bytesToInt(buffer, 0);
 
-            // 解析 JPEG 总长度（小端序，预留字段，当前未使用分片）
-            int totalLength = bytesToInt(buffer, 4);
+            // 分片序号(2B LE)
+            int sliceIndex = ((buffer[4] & 0xFF) | ((buffer[5] & 0xFF) << 8));
 
-            // 解析当前包长度（小端序）
-            int currentLength = bytesToInt(buffer, 8);
+            // 总分片数(2B LE)
+            int sliceTotal = ((buffer[6] & 0xFF) | ((buffer[7] & 0xFF) << 8));
+
+            // 当前包JPEG数据长度(2B LE)
+            int dataLen = ((buffer[8] & 0xFF) | ((buffer[9] & 0xFF) << 8));
 
             // 校验数据长度
-            int expectedLength = UDP_IMAGE_HEADER_SIZE + currentLength;
-            if (length < expectedLength) {
-                // 数据不完整
+            if (length < UDP_IMAGE_HEADER_SIZE + dataLen) {
                 return null;
             }
 
             // 提取 JPEG 数据
-            byte[] jpegData = new byte[currentLength];
-            System.arraycopy(buffer, UDP_IMAGE_HEADER_SIZE, jpegData, 0, currentLength);
+            byte[] jpegData = new byte[dataLen];
+            System.arraycopy(buffer, UDP_IMAGE_HEADER_SIZE, jpegData, 0, dataLen);
 
-            return new ImageFrame(frameNumber, jpegData);
+            ImageFrame frame = new ImageFrame(frameNumber, jpegData);
+            // 如果是分片传输，标记分片信息(供后续重组使用)
+            // frame.sliceIndex = sliceIndex; frame.sliceTotal = sliceTotal;
+            // 当前单包模式: 大部分JPEG < MTU, sliceTotal通常为1
+
+            return frame;
         } catch (Exception e) {
             return null;
         }

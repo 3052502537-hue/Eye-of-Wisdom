@@ -56,6 +56,8 @@ void setup()
     if (!g_tm.begin()) {
         Serial.println(F("[MAIN] TaskManager begin FAIL"));
     }
+    /* 注: 各模块初始化由 setup() 直接调用, 保留 LED/蜂鸣器反馈时机.
+     *     TaskManager 不设统一的 initAll(), 避免初始化与UI反馈耦合. */
 
     /* ---- 6. 初始化SPI主机通信 ---- */
     Serial.println(F("[MAIN] init SPI master..."));
@@ -127,8 +129,106 @@ void setup()
 
     /* ---- 13. 注册WiFi命令回调 ---- */
     g_tm.wifi().setCommandCallback([](AppCommand_t cmd, const char* json, size_t len) {
-        Serial.printf("[MAIN] App cmd=%d: %s\n", cmd, json);
-        /* TODO: 按命令类型处理(set_mode/set_warn/set_img等) */
+#ifdef DEBUG
+        Serial.printf("[CMD] cmd=%d json=%.*s\n", cmd, (int)len, json);
+#endif
+
+        switch (cmd) {
+        case CMD_SET_MODE: {
+            /* 解析 "mode":N 设置工作模式 */
+            const char* p = strstr(json, "\"mode\":");
+            if (p) {
+                int mode = atoi(p + 7);
+                if (mode >= MODE_SENSOR_ONLY && mode <= MODE_DEBUG) {
+                    g_tm.setWorkMode((WorkMode_t)mode);
+#ifdef DEBUG
+                    Serial.printf("[CMD] work mode -> %d\n", mode);
+#endif
+                }
+            }
+            break;
+        }
+        case CMD_SET_WARN: {
+            /* 解析阈值参数 "d_att":N.N, "d_war":N.N, "d_dan":N.N
+             * 注: 阈值当前为编译期常量, 此处记录日志供调试.
+             *     运行时动态阈值需将 config.h 宏改为变量. */
+#ifdef DEBUG
+            Serial.println("[CMD] set_warn received (runtime thresholds not yet supported)");
+#endif
+            break;
+        }
+        case CMD_SET_IMG: {
+            /* 解析图像参数并转发给摄像头板 */
+            const char* resP = strstr(json, "\"res\":");
+            const char* qP   = strstr(json, "\"q\":");
+            if (resP) {
+                uint8_t res = (uint8_t)atoi(resP + 6);
+                uint8_t d[1] = {res};
+                g_tm.spi().sendCommand(SPI_CMD_SET_RESOLUTION, d, 1);
+#ifdef DEBUG
+                Serial.printf("[CMD] set resolution -> %u\n", res);
+#endif
+            }
+            if (qP) {
+                uint8_t quality = (uint8_t)atoi(qP + 4);
+                uint8_t d[1] = {quality};
+                g_tm.spi().sendCommand(SPI_CMD_SET_QUALITY, d, 1);
+#ifdef DEBUG
+                Serial.printf("[CMD] set quality -> %u\n", quality);
+#endif
+            }
+            break;
+        }
+        case CMD_SET_BUZZER: {
+            /* 开关蜂鸣器测试 */
+            const char* onP = strstr(json, "\"on\":");
+            if (onP) {
+                bool on = (atoi(onP + 5) != 0);
+                if (on) g_tm.alarm().setBuzzerOn(2000);
+                else    g_tm.alarm().setBuzzerOff();
+#ifdef DEBUG
+                Serial.printf("[CMD] buzzer -> %s\n", on ? "ON" : "OFF");
+#endif
+            }
+            break;
+        }
+        case CMD_REBOOT:
+#ifdef DEBUG
+            Serial.println("[CMD] reboot requested, restarting in 500ms...");
+#endif
+            g_tm.wifi().sendSensorJson("{\"type\":\"status\",\"msg\":\"rebooting\"}", 38);
+            delay(500);
+            ESP.restart();
+            break;
+        case CMD_CALIBRATE:
+#ifdef DEBUG
+            Serial.println("[CMD] calibrate requested");
+#endif
+            /* 触发传感器自检流程 */
+            {
+                bool laserOk = g_tm.laser().selfTest();
+                bool radarOk = g_tm.radarFront().selfTest();
+                char rsp[128];
+                snprintf(rsp, sizeof(rsp),
+                    "{\"type\":\"status\",\"calibrate\":{\"laser\":%s,\"radar\":%s}}",
+                    laserOk ? "true" : "false", radarOk ? "true" : "false");
+                g_tm.wifi().sendSensorJson(rsp, strlen(rsp));
+            }
+            break;
+        case CMD_QUERY_STATUS: {
+            /* 返回当前系统状态 */
+            char rsp[256];
+            snprintf(rsp, sizeof(rsp),
+                "{\"type\":\"status\",\"mode\":%d,\"clients\":%u,\"uptime\":%lu}",
+                (int)g_tm.getWorkMode(),
+                g_tm.wifi().getClientCount(),
+                (unsigned long)millis());
+            g_tm.wifi().sendSensorJson(rsp, strlen(rsp));
+            break;
+        }
+        default:
+            break;
+        }
     });
 
     /* ---- 14. 进入工作模式: 等待手机连接 ---- */

@@ -1,0 +1,45 @@
+<!--
+============================================================================
+文件名: colors.xml
+功能描述:
+  - 应用色彩体系定义
+  - 包含日间和夜间模式的语义色值
+  - 以蓝色为主色调，辅以青色和暖橙色强调
+============================================================================
+-->
+<resources>
+    <!-- 主色调：科技蓝 -->
+    <color name="primary">#FF1565C0</color>
+    <color name="on_primary">#FFFFFFFF</color>
+    <color name="primary_container">#FFD1E4FF</color>
+    <color name="on_primary_container">#FF001D36</color>
+
+    <!-- 辅色调：青色 -->
+    <color name="secondary">#FF00838F</color>
+    <color name="on_secondary">#FFFFFFFF</color>
+    <color name="secondary_container">#FFB2EBF2</color>
+    <color name="on_secondary_container">#FF002022</color>
+
+    <!-- 背景色 -->
+    <color name="background">#FFFDFCFF</color>
+    <color name="on_background">#FF1A1C1E</color>
+
+    <!-- 表面色 -->
+    <color name="surface">#FFFDFCFF</color>
+    <color name="on_surface">#FF1A1C1E</color>
+
+    <!-- 错误色 -->
+    <color name="error">#FFBA1A1A</color>
+    <color name="on_error">#FFFFFFFF</color>
+
+    <!-- 功能色 -->
+    <color name="success">#FF2E7D32</color>      <!-- 成功/安全状态 -->
+    <color name="warning">#FFF57F17</color>      <!-- 警告/注意提示 -->
+    <color name="danger">#FFC62828</color>       <!-- 危险/障碍告警 -->
+
+    <!-- 辅助色 -->
+    <color name="divider">#FFE0E0E0</color>
+    <color name="text_primary">#FF212121</color>
+    <color name="text_secondary">#FF757575</color>
+    <color name="text_disabled">#FFBDBDBD</color>
+</resources>

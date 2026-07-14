@@ -29,6 +29,8 @@ import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.net.SocketException;
+import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -61,11 +63,11 @@ public class TCPClient {
     /** 线程池，避免阻塞主线程 */
     private final ExecutorService executor = Executors.newFixedThreadPool(2);
 
-    /** 传感器数据回调监听器 */
-    private OnSensorDataListener dataListener;
+    /** 传感器数据回调监听器列表（线程安全，支持多监听器） */
+    private final List<OnSensorDataListener> dataListeners = new CopyOnWriteArrayList<>();
 
-    /** 连接状态回调监听器 */
-    private OnConnectionStateListener stateListener;
+    /** 连接状态回调监听器列表（线程安全） */
+    private final List<OnConnectionStateListener> stateListeners = new CopyOnWriteArrayList<>();
 
     /** ESP32 主机地址 */
     private final String host;
@@ -121,19 +123,43 @@ public class TCPClient {
     }
 
     /**
-     * 设置传感器数据回调监听器
+     * 设置传感器数据回调监听器（替换所有现有监听器）
      * @param listener 监听器实例
      */
     public void setOnSensorDataListener(OnSensorDataListener listener) {
-        this.dataListener = listener;
+        dataListeners.clear();
+        if (listener != null) {
+            dataListeners.add(listener);
+        }
     }
 
     /**
-     * 设置连接状态回调监听器
+     * 添加传感器数据回调监听器（不影响现有监听器）
+     * @param listener 监听器实例
+     */
+    public void addOnSensorDataListener(OnSensorDataListener listener) {
+        if (listener != null && !dataListeners.contains(listener)) {
+            dataListeners.add(listener);
+        }
+    }
+
+    /**
+     * 移除传感器数据回调监听器
+     * @param listener 监听器实例
+     */
+    public void removeOnSensorDataListener(OnSensorDataListener listener) {
+        dataListeners.remove(listener);
+    }
+
+    /**
+     * 设置连接状态回调监听器（替换所有现有监听器）
      * @param listener 监听器实例
      */
     public void setOnConnectionStateListener(OnConnectionStateListener listener) {
-        this.stateListener = listener;
+        stateListeners.clear();
+        if (listener != null) {
+            stateListeners.add(listener);
+        }
     }
 
     /**
@@ -244,14 +270,16 @@ public class TCPClient {
                 // 对方关闭连接
                 break;
             }
-            // 回调原始数据
-            if (dataListener != null) {
-                dataListener.onRawData(line);
+            // 回调所有监听器：原始数据
+            for (OnSensorDataListener listener : dataListeners) {
+                listener.onRawData(line);
             }
             // 解析 JSON 数据
             Protocol.SensorData sensorData = Protocol.parseSensorData(line);
-            if (sensorData != null && dataListener != null) {
-                dataListener.onSensorData(sensorData);
+            if (sensorData != null) {
+                for (OnSensorDataListener listener : dataListeners) {
+                    listener.onSensorData(sensorData);
+                }
             }
         }
     }
@@ -310,8 +338,8 @@ public class TCPClient {
      * @param message 状态描述
      */
     private void notifyStateChanged(int state, String message) {
-        if (stateListener != null) {
-            stateListener.onStateChanged(state, message);
+        for (OnConnectionStateListener listener : stateListeners) {
+            listener.onStateChanged(state, message);
         }
     }
 

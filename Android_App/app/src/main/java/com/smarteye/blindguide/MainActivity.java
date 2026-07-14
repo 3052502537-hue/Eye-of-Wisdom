@@ -24,26 +24,22 @@
 package com.smarteye.blindguide;
 
 import android.Manifest;
-import android.content.pm.PackageManager;
-import android.os.Build;
 import android.os.Bundle;
 import android.util.Log;
-import android.view.View;
 import android.widget.Toast;
 
 import androidx.activity.result.ActivityResultLauncher;
 import androidx.activity.result.contract.ActivityResultContracts;
-import androidx.annotation.NonNull;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.fragment.app.Fragment;
 import androidx.fragment.app.FragmentManager;
 import androidx.fragment.app.FragmentTransaction;
 
 import com.google.android.material.bottomnavigation.BottomNavigationView;
-import com.google.android.material.navigation.NavigationBarView;
 import com.smarteye.blindguide.ai.TFLiteClassifier;
 import com.smarteye.blindguide.data.AppConfig;
 import com.smarteye.blindguide.logic.ObstacleAnalyzer;
+import com.smarteye.blindguide.network.Protocol;
 import com.smarteye.blindguide.network.TCPClient;
 import com.smarteye.blindguide.network.UDPReceiver;
 import com.smarteye.blindguide.tts.TTSManager;
@@ -51,6 +47,9 @@ import com.smarteye.blindguide.ui.DebugFragment;
 import com.smarteye.blindguide.ui.MainFragment;
 import com.smarteye.blindguide.ui.SettingsFragment;
 import com.smarteye.blindguide.voice.VoiceControl;
+
+import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
  * 应用主 Activity
@@ -86,6 +85,27 @@ public class MainActivity extends AppCompatActivity {
 
     /** 权限请求启动器 */
     private ActivityResultLauncher<String[]> permissionLauncher;
+
+    /** 调试数据监听器列表（线程安全） */
+    private final List<DebugDataListener> debugListeners = new CopyOnWriteArrayList<>();
+
+    /**
+     * 调试数据监听器接口
+     * DebugFragment 通过此接口获取数据，避免覆盖主回调
+     */
+    public interface DebugDataListener {
+        /** 收到传感器数据 */
+        void onSensorData(Protocol.SensorData data);
+
+        /** 收到图像帧 */
+        void onImageFrame(Protocol.ImageFrame frame);
+
+        /** TFLite 识别完成 */
+        void onClassifyResult(TFLiteClassifier.ClassifyResult result);
+
+        /** 避障分析完成 */
+        void onAnalysisResult(ObstacleAnalyzer.AnalysisResult result);
+    }
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -126,20 +146,13 @@ public class MainActivity extends AppCompatActivity {
                 switchFragment(TAG_SETTINGS);
                 return true;
             } else if (itemId == R.id.nav_debug) {
-                // 调试页仅在激活开发者模式后可见
-                if (AppConfig.getInstance().isDebugModeActivated()) {
-                    switchFragment(TAG_DEBUG);
-                    return true;
-                } else {
-                    Toast.makeText(this, "开发者模式未激活", Toast.LENGTH_SHORT).show();
-                    return false;
-                }
+                switchFragment(TAG_DEBUG);
+                return true;
             }
             return false;
         });
 
-        // 默认隐藏调试页导航项
-        updateDebugNavVisibility();
+        // 调试页已默认可见，无需隐藏
     }
 
     /**
@@ -186,12 +199,17 @@ public class MainActivity extends AppCompatActivity {
         voiceControl = new VoiceControl();
         voiceControl.initialize(this);
 
-        // 设置 TCP 数据回调
-        tcpClient.setOnSensorDataListener(new TCPClient.OnSensorDataListener() {
+        // 设置 TCP 数据回调（使用 add 而非 set，避免覆盖其他监听器）
+        tcpClient.addOnSensorDataListener(new TCPClient.OnSensorDataListener() {
             @Override
             public void onSensorData(Protocol.SensorData data) {
                 // 更新避障分析器
                 analyzer.updateSensorData(data);
+
+                // 转发给调试监听器
+                for (DebugDataListener dl : debugListeners) {
+                    dl.onSensorData(data);
+                }
             }
 
             @Override
@@ -201,13 +219,46 @@ public class MainActivity extends AppCompatActivity {
             }
         });
 
-        // 设置 UDP 图像回调
-        udpReceiver.setOnImageFrameListener(frame -> {
+        // 添加避障分析结果回调 → 转发给调试监听器（使用 add 避免覆盖 MainFragment 的回调）
+        analyzer.addOnAnalysisResultListener(new ObstacleAnalyzer.OnAnalysisResultListener() {
+            @Override
+            public void onResult(ObstacleAnalyzer.AnalysisResult result) {
+                for (DebugDataListener dl : debugListeners) {
+                    dl.onAnalysisResult(result);
+                }
+            }
+
+            @Override
+            public void onRiskChanged(int newRisk, int oldRisk) {
+                // 风险变化由 MainFragment 处理
+            }
+        });
+
+        // 设置 UDP 图像回调（使用 add 而非 set，避免覆盖其他监听器）
+        udpReceiver.addOnImageFrameListener(frame -> {
+            // 转发图像帧给调试监听器
+            for (DebugDataListener dl : debugListeners) {
+                dl.onImageFrame(frame);
+            }
+
             // 调用 TFLite 进行视觉识别
             if (AppConfig.getInstance().isVisionEnabled() && classifier.isInitialized()) {
-                classifier.classify(frame.jpegData, result -> {
-                    // 更新避障分析器
-                    analyzer.updateVisionResult(result);
+                classifier.classify(frame.jpegData, new TFLiteClassifier.OnClassifyResultListener() {
+                    @Override
+                    public void onResult(TFLiteClassifier.ClassifyResult result) {
+                        // 更新避障分析器
+                        analyzer.updateVisionResult(result);
+
+                        // 转发识别结果给调试监听器
+                        for (DebugDataListener dl : debugListeners) {
+                            dl.onClassifyResult(result);
+                        }
+                    }
+
+                    @Override
+                    public void onError(String error) {
+                        Log.e(TAG, "TFLite识别错误: " + error);
+                    }
                 });
             }
         });
@@ -343,6 +394,25 @@ public class MainActivity extends AppCompatActivity {
      */
     public VoiceControl getVoiceControl() {
         return voiceControl;
+    }
+
+    /**
+     * 添加调试数据监听器
+     * DebugFragment 通过此方法注册，不会覆盖主回调
+     * @param listener 调试数据监听器
+     */
+    public void addDebugDataListener(DebugDataListener listener) {
+        if (listener != null && !debugListeners.contains(listener)) {
+            debugListeners.add(listener);
+        }
+    }
+
+    /**
+     * 移除调试数据监听器
+     * @param listener 调试数据监听器
+     */
+    public void removeDebugDataListener(DebugDataListener listener) {
+        debugListeners.remove(listener);
     }
 
     /**

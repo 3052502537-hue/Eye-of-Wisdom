@@ -37,8 +37,9 @@ static void IRAM_ATTR onDataReadyIsr()
 
 /* 构造函数 */
 SpiMasterComm::SpiMasterComm()
-    : _spi(nullptr), _initialized(false), _frameReady(false),
-      _frameInProg(false), _imgRecvLen(0), _imgExpectLen(0),
+    : _spi(nullptr), _spiMutex(nullptr), _initialized(false),
+      _frameReady(false), _frameInProg(false),
+      _imgRecvLen(0), _imgExpectLen(0),
       _imgWidth(0), _imgHeight(0), _imgFormat(0),
       _imgBlockCount(0), _frameId(0)
 {
@@ -53,6 +54,10 @@ SpiMasterComm::~SpiMasterComm()
         delete _spi;
         _spi = nullptr;
     }
+    if (_spiMutex) {
+        vSemaphoreDelete(_spiMutex);
+        _spiMutex = nullptr;
+    }
     _initialized = false;
 }
 
@@ -62,6 +67,13 @@ bool SpiMasterComm::begin()
     if (_initialized) {
         DBG_PRINTLN("[SPI] already initialized");
         return true;
+    }
+
+    /* 创建 SPI 总线互斥锁 (防止读/写并发冲突) */
+    _spiMutex = xSemaphoreCreateMutex();
+    if (!_spiMutex) {
+        DBG_PRINTLN("[SPI] mutex create FAIL");
+        return false;
     }
 
     /* 创建 FSPI 实例并初始化引脚 */
@@ -95,9 +107,17 @@ bool SpiMasterComm::readFrameIfReady()
     }
     _dataReadyFlag = false;   // 清标志
 
+    /* 获取 SPI 总线锁 (防止与 sendCommand 并发) */
+    if (xSemaphoreTake(_spiMutex, pdMS_TO_TICKS(10)) != pdTRUE) {
+        return false;  // 总线忙, 下次再试
+    }
+
     /* 读取一帧原始数据 */
     uint8_t rawBuf[SPI_FRAME_OVERHEAD + SPI_MAX_DATA_LEN];
     size_t rawLen = spiTransfer(rawBuf, sizeof(rawBuf));
+
+    xSemaphoreGive(_spiMutex);  // 释放总线
+
     if (rawLen == 0) {
         return false;
     }
@@ -278,7 +298,13 @@ bool SpiMasterComm::getLatestFrame(ImageFrame_t* outFrame)
 /* sendFrame - 构造并发送一帧 SPI 帧 */
 bool SpiMasterComm::sendFrame(uint8_t cmd, const uint8_t* payload, uint16_t len)
 {
-    if (!_spi || len > SPI_MAX_DATA_LEN) return false;
+    if (!_spi || !_spiMutex || len > SPI_MAX_DATA_LEN) return false;
+
+    /* 获取 SPI 总线锁 (防止与 readFrameIfReady 并发) */
+    if (xSemaphoreTake(_spiMutex, pdMS_TO_TICKS(50)) != pdTRUE) {
+        DBG_PRINTLN("[SPI] sendFrame: bus busy");
+        return false;
+    }
 
     uint8_t buf[SPI_FRAME_OVERHEAD + SPI_MAX_DATA_LEN];
     size_t idx = 0;
@@ -315,6 +341,8 @@ bool SpiMasterComm::sendFrame(uint8_t cmd, const uint8_t* payload, uint16_t len)
     _spi->transferBytes(buf, nullptr, idx);
     digitalWrite(PIN_SPI_CS, HIGH);
     _spi->endTransaction();
+
+    xSemaphoreGive(_spiMutex);  // 释放总线
 
     return true;
 }

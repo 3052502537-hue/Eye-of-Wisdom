@@ -35,8 +35,10 @@
 
 /* 构造函数 */
 SDM10Driver::SDM10Driver()
-    : _online(false), _initialized(false), _lastError(0), _lastReadMs(0)
+    : _online(false), _initialized(false), _lastError(0), _lastReadMs(0),
+      _filterIdx(0), _filterCount(0), _filterSum(0.0f)
 {
+    memset(_filterBuf, 0, sizeof(_filterBuf));
 }
 
 /* 析构函数 */
@@ -92,13 +94,22 @@ bool SDM10Driver::readDistance(float& outDistance)
     SDM10_UART.readBytes(buf, len);
 
     /* 解析帧 */
-    if (parseFrame(buf, len, outDistance)) {
+    float rawDist;
+    if (parseFrame(buf, len, rawDist)) {
         _online = true;
         _lastReadMs = millis();
         _lastError = 0;
+
+        /* 滑动窗口滤波 (5样本移动平均, 抑制50Hz高频噪声) */
+        _filterSum -= _filterBuf[_filterIdx];
+        _filterBuf[_filterIdx] = rawDist;
+        _filterSum += rawDist;
+        _filterIdx = (_filterIdx + 1) % FILTER_WINDOW;
+        if (_filterCount < FILTER_WINDOW) _filterCount++;
+        outDistance = _filterSum / _filterCount;
+
 #ifdef DEBUG
-        DBG_PRINTF("[SDM10] dist=%.2f m (%u mm)\n", outDistance,
-                   (unsigned)(outDistance * 1000.0f));
+        DBG_PRINTF("[SDM10] raw=%.2f filt=%.2f m\n", rawDist, outDistance);
 #endif
         return true;
     }

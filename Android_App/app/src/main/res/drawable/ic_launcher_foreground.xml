@@ -1,0 +1,32 @@
+<!--
+============================================================================
+文件名: ic_launcher_foreground.xml
+功能描述: 自适应图标前景层 — 眼睛图标（寓意"智慧之眼"，导盲辅助）
+  - 白色线条风格，108dp 画布居中于 54dp 视觉中心
+============================================================================
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- 简化眼睛图标：外轮廓 + 瞳孔 -->
+    <group
+        android:pivotX="54"
+        android:pivotY="54"
+        android:translateX="18"
+        android:translateY="28">
+
+        <!-- 眼睛外轮廓 -->
+        <path
+            android:fillColor="#FFFFFF"
+            android:pathData="M36,27C16.1,27 0,13.5 0,13.5S16.1,0 36,0s36,13.5 36,13.5S55.9,27 36,27z
+                               M36,6c-4.1,0 -7.5,3.4 -7.5,7.5S31.9,21 36,21s7.5,-3.4 7.5,-7.5S40.1,6 36,6z" />
+
+        <!-- 瞳孔高光点 -->
+        <path
+            android:fillColor="#1565C0"
+            android:pathData="M36,9c-2.5,0 -4.5,2 -4.5,4.5S33.5,18 36,18s4.5,-2 4.5,-4.5S38.5,9 36,9z" />
+    </group>
+</vector>

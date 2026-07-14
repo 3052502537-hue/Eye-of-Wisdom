@@ -49,8 +49,8 @@ bool AlarmManager::begin()
     ledcAttach(PIN_BUZZER, BUZZER_LEDC_FREQ_HZ, BUZZER_LEDC_TIMER_BITS);
     ledcWrite(PIN_BUZZER, 0);   // 默认关闭(占空比0)
 
-    /* RGB 引脚: WS2812 数据线，初始化为熄灭 */
-    pinMode(PIN_RGB_LED, OUTPUT);
+    /* RGB 引脚: WS2812 数据线，初始化为熄灭
+     * (neopixelWrite 内部已处理引脚配置, 无需 pinMode) */
     setRgbColor(0, 0, 0);
 
     _initialized = true;

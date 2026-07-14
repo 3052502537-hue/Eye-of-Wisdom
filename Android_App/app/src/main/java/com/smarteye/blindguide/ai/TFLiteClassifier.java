@@ -2,20 +2,21 @@
  * ============================================================================
  * 文件名: TFLiteClassifier.java
  * 功能描述:
- *   - 基于 TensorFlow Lite 的视觉识别推理引擎
+ *   - 基于 TensorFlow Lite 的视觉目标检测推理引擎（YOLOv8-Nano → TFLite）
  *   - 支持盲道检测、红绿灯识别、大型障碍物、路口识别、斑马线识别
  *   - 加载 assets 目录下的 .tflite 模型文件
  *   - 接收 JPEG 字节数据，解码为 Bitmap 后进行推理
+ *   - 输出多目标检测结果（bbox + class + score），支持单帧多目标
  * 依赖关系:
  *   - 依赖 TensorFlow Lite 库
- *   - 依赖 AppConfig 获取模型配置参数
+ *   - 依赖 AppConfig 获取模型配置参数和阈值
  *   - 被 ObstacleAnalyzer 调用进行视觉识别
  *   - 被 DebugFragment 用于显示识别结果
  * 接口说明:
  *   - initialize(Context): 加载模型，初始化推理引擎
- *   - classify(byte[]): 输入 JPEG 数据，返回识别结果
+ *   - classify(byte[]): 输入 JPEG 数据，返回多目标检测结果
  *   - release(): 释放模型资源
- *   - 通过 OnClassifyResultListener 回调识别结果
+ *   - 通过 OnClassifyResultListener 回调检测结果（含 DetectedObject 列表）
  * ============================================================================
  */
 package com.smarteye.blindguide.ai;
@@ -28,8 +29,6 @@ import android.util.Log;
 import com.smarteye.blindguide.data.AppConfig;
 
 import org.tensorflow.lite.Interpreter;
-import org.tensorflow.lite.gpu.CompatibilityList;
-import org.tensorflow.lite.gpu.GpuDelegate;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -38,11 +37,15 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
+import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
- * TFLite 视觉识别分类器
- * 负责加载模型并执行图像分类推理
+ * TFLite 视觉目标检测推理引擎
+ * 适配 YOLOv8-Nano 等目标检测模型，输出多目标 bbox + class + score
  */
 public class TFLiteClassifier {
 
@@ -57,17 +60,21 @@ public class TFLiteClassifier {
     /** TFLite 解释器 */
     private Interpreter interpreter;
 
-    /** GPU 代理（可选，加速推理） */
-    private GpuDelegate gpuDelegate;
-
-    /** 输入图像尺寸 */
+    /** 模型输入图像尺寸 */
     private final int inputSize;
 
-    /** 模型输入字节数组 */
+    /** 模型输入字节缓冲区 */
     private ByteBuffer inputImageBuffer;
 
-    /** 模型输出数组 */
-    private float[][] outputBuffer;
+    /** 最大检测数量 */
+    private final int maxDetections;
+
+    // ==================== 输出张量索引（运行时确定） ====================
+
+    private int boxOutputIndex = 0;
+    private int classOutputIndex = 1;
+    private int scoreOutputIndex = 2;
+    private int numOutputIndex = 3;
 
     /** 分类标签列表 */
     private List<String> labels;
@@ -75,13 +82,88 @@ public class TFLiteClassifier {
     /** 是否已初始化 */
     private boolean isInitialized = false;
 
+    // ==================== 内部数据结构 ====================
+
+    /**
+     * 单个检测目标
+     */
+    public static class DetectedObject {
+        /** 类别名称 */
+        public String className;
+
+        /** 置信度（0.0~1.0） */
+        public float confidence;
+
+        /** bbox 中心归一化坐标 [0, 1] */
+        public float centerX;
+        public float centerY;
+
+        /** bbox 归一化坐标 [0, 1] */
+        public float left;
+        public float top;
+        public float right;
+        public float bottom;
+
+        public DetectedObject() {}
+
+        @Override
+        public String toString() {
+            return String.format("%s(%.0f%%) [%.2f,%.2f,%.2f,%.2f]",
+                    className, confidence * 100, left, top, right, bottom);
+        }
+    }
+
+    /**
+     * 检测结果数据结构
+     */
+    public static class ClassifyResult {
+        /** 置信度最高的类别名称（兼容旧接口） */
+        public String className;
+
+        /** 置信度最高的置信度（0.0~1.0，兼容旧接口） */
+        public float confidence;
+
+        /** 所有类别的置信度分布（检测模式下为 null） */
+        public float[] probabilities;
+
+        /** 推理耗时（毫秒） */
+        public long inferenceTime;
+
+        /** 输入图像 Bitmap（调试用） */
+        public Bitmap inputBitmap;
+
+        /** 所有检测到的目标列表（按置信度降序排列） */
+        public List<DetectedObject> detections;
+
+        public ClassifyResult() {
+            this.detections = new ArrayList<>();
+        }
+
+        /**
+         * 是否有有效检测结果
+         */
+        public boolean hasDetections() {
+            return detections != null && !detections.isEmpty();
+        }
+
+        /**
+         * 获取置信度最高的检测目标
+         */
+        public DetectedObject getTopDetection() {
+            if (hasDetections()) {
+                return detections.get(0);
+            }
+            return null;
+        }
+    }
+
     /**
      * 识别结果回调接口
      */
     public interface OnClassifyResultListener {
         /**
          * 识别完成回调
-         * @param result 识别结果
+         * @param result 检测结果（含 DetectedObject 列表）
          */
         void onResult(ClassifyResult result);
 
@@ -92,57 +174,31 @@ public class TFLiteClassifier {
         void onError(String error);
     }
 
-    /**
-     * 识别结果数据结构
-     */
-    public static class ClassifyResult {
-        /** 识别到的类别名称 */
-        public String className;
-
-        /** 置信度（0.0~1.0） */
-        public float confidence;
-
-        /** 所有类别的置信度分布 */
-        public float[] probabilities;
-
-        /** 推理耗时（毫秒） */
-        public long inferenceTime;
-
-        /** 输入图像 Bitmap（调试用） */
-        public Bitmap inputBitmap;
-
-        public ClassifyResult() {}
-
-        /**
-         * 构造识别结果
-         * @param className 类别名称
-         * @param confidence 置信度
-         */
-        public ClassifyResult(String className, float confidence) {
-            this.className = className;
-            this.confidence = confidence;
-        }
-    }
+    // ==================== 构造方法 ====================
 
     /**
      * 构造分类器
      * 使用 AppConfig 中的默认输入尺寸
      */
     public TFLiteClassifier() {
-        this(AppConfig.TFLITE_INPUT_SIZE);
+        this(AppConfig.TFLITE_INPUT_SIZE, AppConfig.MAX_DETECTIONS);
     }
 
     /**
      * 构造分类器
      * @param inputSize 模型输入图像尺寸（像素）
+     * @param maxDetections 最大检测目标数
      */
-    public TFLiteClassifier(int inputSize) {
+    public TFLiteClassifier(int inputSize, int maxDetections) {
         this.inputSize = inputSize;
+        this.maxDetections = maxDetections;
     }
+
+    // ==================== 初始化 ====================
 
     /**
      * 初始化分类器
-     * 加载模型文件和标签
+     * 加载模型文件、标签，配置推理引擎
      * @param context 上下文，用于访问 assets
      * @return true 初始化成功，false 失败
      */
@@ -155,40 +211,32 @@ public class TFLiteClassifier {
                 return false;
             }
 
-            // 配置解释器选项
+            // 配置解释器选项（CPU 多线程推理）
             Interpreter.Options options = new Interpreter.Options();
-
-            // 尝试启用 GPU 加速（失败则回退到 CPU）
-            try {
-                CompatibilityList compatibilityList = new CompatibilityList();
-                if (compatibilityList.isDelegateSupportedOnThisDevice()) {
-                    gpuDelegate = new GpuDelegate();
-                    options.addDelegate(gpuDelegate);
-                    Log.i(TAG, "GPU 加速已启用");
-                }
-            } catch (Exception e) {
-                Log.w(TAG, "GPU 加速不可用，使用 CPU: " + e.getMessage());
-                options.setNumThreads(4); // CPU 多线程
-            }
+            options.setNumThreads(4);
 
             // 创建解释器
             interpreter = new Interpreter(modelBuffer, options);
 
-            // 初始化输入输出缓冲区
-            inputImageBuffer = ByteBuffer.allocateDirect(
-                    4 * inputSize * inputSize * CHANNELS);
-            inputImageBuffer.order(ByteOrder.nativeOrder());
+            // 识别输出张量索引（通过名称匹配，兜底按索引顺序）
+            detectOutputTensorIndices();
 
-            // 输出维度：[1, numLabels]，标签数将在加载标签后确定
-            // 默认假设 5 个类别（盲道、红绿灯、障碍物、路口、斑马线）
-            int numLabels = 5;
-            outputBuffer = new float[1][numLabels];
+            // 初始化输入缓冲区
+            int bufferSize = 4 * inputSize * inputSize * CHANNELS;
+            inputImageBuffer = ByteBuffer.allocateDirect(bufferSize);
+            inputImageBuffer.order(ByteOrder.nativeOrder());
 
             // 加载分类标签
             labels = loadDefaultLabels();
 
             isInitialized = true;
-            Log.i(TAG, "TFLite 模型初始化成功，输入尺寸: " + inputSize);
+            Log.i(TAG, "TFLite 目标检测模型初始化成功"
+                    + ", 输入: " + inputSize + "×" + inputSize
+                    + ", 最大检测数: " + maxDetections
+                    + ", 输出张量: boxes@" + boxOutputIndex
+                    + " classes@" + classOutputIndex
+                    + " scores@" + scoreOutputIndex
+                    + " num@" + numOutputIndex);
             return true;
 
         } catch (Exception e) {
@@ -198,10 +246,47 @@ public class TFLiteClassifier {
     }
 
     /**
+     * 识别输出张量索引
+     * TFLite 目标检测模型通常输出 4 个张量：boxes, classes, scores, num_detections
+     * 不同导出工具生成的名称可能不同，按名称匹配 + 兜底按索引
+     */
+    private void detectOutputTensorIndices() {
+        int outputCount = interpreter.getOutputTensorCount();
+        Log.i(TAG, "模型输出张量数量: " + outputCount);
+
+        boolean matched = false;
+        for (int i = 0; i < outputCount; i++) {
+            String name = interpreter.getOutputTensor(i).name();
+            Log.d(TAG, "  输出[" + i + "]: " + name);
+
+            String lower = name.toLowerCase();
+            if (lower.contains("box") || lower.contains("location") || lower.contains("bbox")) {
+                boxOutputIndex = i;
+                matched = true;
+            } else if (lower.contains("class") || lower.contains("label")) {
+                classOutputIndex = i;
+                matched = true;
+            } else if (lower.contains("score") || lower.contains("confidence")) {
+                scoreOutputIndex = i;
+                matched = true;
+            } else if (lower.contains("num") || lower.contains("count")) {
+                numOutputIndex = i;
+                matched = true;
+            }
+        }
+
+        // 兜底：按 TFLite Detection PostProcess 标准顺序
+        if (!matched && outputCount >= 4) {
+            Log.w(TAG, "未能按名称匹配输出张量，使用默认索引顺序: 0=boxes, 1=classes, 2=scores, 3=num");
+            boxOutputIndex = 0;
+            classOutputIndex = 1;
+            scoreOutputIndex = 2;
+            numOutputIndex = 3;
+        }
+    }
+
+    /**
      * 加载模型文件到 ByteBuffer
-     * @param context 上下文
-     * @param modelFileName 模型文件名
-     * @return 模型数据 ByteBuffer，失败返回 null
      */
     private ByteBuffer loadModelFile(Context context, String modelFileName) {
         try (InputStream is = context.getAssets().open(modelFileName)) {
@@ -226,8 +311,7 @@ public class TFLiteClassifier {
 
     /**
      * 加载默认分类标签
-     * 预定义的 5 个识别类别
-     * @return 标签列表
+     * 预定义的 5 个识别类别，顺序与模型训练时一致
      */
     private List<String> loadDefaultLabels() {
         return new ArrayList<>(Arrays.asList(
@@ -239,10 +323,12 @@ public class TFLiteClassifier {
         ));
     }
 
+    // ==================== 推理 ====================
+
     /**
-     * 执行图像分类
+     * 执行目标检测推理
      * @param jpegData JPEG 图像字节数据
-     * @param listener 识别结果回调监听器
+     * @param listener 检测结果回调监听器
      */
     public void classify(byte[] jpegData, OnClassifyResultListener listener) {
         if (!isInitialized || interpreter == null) {
@@ -273,34 +359,87 @@ public class TFLiteClassifier {
             // 将 Bitmap 转换为 ByteBuffer
             convertBitmapToBuffer(scaledBitmap);
 
+            // 准备输出缓冲区（Map<Integer, Object> 格式）
+            int actualMaxDets = getOutputSize(classOutputIndex, 0); // 先取类别输出的维度
+            if (actualMaxDets <= 0) actualMaxDets = maxDetections;
+
+            Map<Integer, Object> outputMap = new HashMap<>();
+            outputMap.put(boxOutputIndex, new float[1][actualMaxDets][4]);
+            outputMap.put(classOutputIndex, new float[1][actualMaxDets]);
+            outputMap.put(scoreOutputIndex, new float[1][actualMaxDets]);
+            outputMap.put(numOutputIndex, new float[1]);
+
             // 执行推理
-            interpreter.run(inputImageBuffer, outputBuffer);
+            interpreter.runForMultipleInputsOutputs(
+                    new Object[]{inputImageBuffer}, outputMap);
 
             long inferenceTime = System.currentTimeMillis() - startTime;
 
-            // 解析结果，找到置信度最高的类别
-            int maxIndex = 0;
-            float maxProb = outputBuffer[0][0];
-            for (int i = 1; i < outputBuffer[0].length; i++) {
-                if (outputBuffer[0][i] > maxProb) {
-                    maxProb = outputBuffer[0][i];
-                    maxIndex = i;
+            // 解析输出张量
+            float[][][] boxes = (float[][][]) outputMap.get(boxOutputIndex);
+            float[][] classes = (float[][]) outputMap.get(classOutputIndex);
+            float[][] scores = (float[][]) outputMap.get(scoreOutputIndex);
+            float[] numDetections = (float[]) outputMap.get(numOutputIndex);
+
+            int numDet = Math.min((int) numDetections[0], actualMaxDets);
+
+            // 构建检测结果列表
+            List<DetectedObject> detections = new ArrayList<>();
+            float topScoreThreshold = AppConfig.DETECTION_SCORE_THRESHOLD;
+
+            for (int i = 0; i < numDet; i++) {
+                float score = scores[0][i];
+                if (score < topScoreThreshold) {
+                    continue;
                 }
+
+                int classIdx = (int) classes[0][i];
+                DetectedObject obj = new DetectedObject();
+                obj.confidence = score;
+                obj.className = (classIdx >= 0 && classIdx < labels.size())
+                        ? labels.get(classIdx) : "未知(" + classIdx + ")";
+
+                // 解析 bbox [ymin, xmin, ymax, xmax] 归一化坐标
+                float ymin = boxes[0][i][0];
+                float xmin = boxes[0][i][1];
+                float ymax = boxes[0][i][2];
+                float xmax = boxes[0][i][3];
+
+                obj.top = Math.max(0, ymin);
+                obj.left = Math.max(0, xmin);
+                obj.bottom = Math.min(1, ymax);
+                obj.right = Math.min(1, xmax);
+                obj.centerX = (obj.left + obj.right) / 2f;
+                obj.centerY = (obj.top + obj.bottom) / 2f;
+
+                detections.add(obj);
             }
+
+            // 按置信度降序排列
+            Collections.sort(detections, (a, b) -> Float.compare(b.confidence, a.confidence));
 
             // 构建结果对象
             ClassifyResult result = new ClassifyResult();
-            result.className = (maxIndex < labels.size()) ? labels.get(maxIndex) : "未知";
-            result.confidence = maxProb;
-            result.probabilities = outputBuffer[0].clone();
+            result.detections = detections;
             result.inferenceTime = inferenceTime;
             result.inputBitmap = scaledBitmap;
+
+            // 兼容旧接口：取最高置信度目标
+            if (!detections.isEmpty()) {
+                DetectedObject top = detections.get(0);
+                result.className = top.className;
+                result.confidence = top.confidence;
+            } else {
+                result.className = "无检测结果";
+                result.confidence = 0f;
+            }
 
             if (listener != null) {
                 listener.onResult(result);
             }
 
         } catch (Exception e) {
+            Log.e(TAG, "推理失败: " + e.getMessage(), e);
             if (listener != null) {
                 listener.onError("推理失败: " + e.getMessage());
             }
@@ -308,9 +447,23 @@ public class TFLiteClassifier {
     }
 
     /**
+     * 获取输出张量在指定维度的尺寸
+     */
+    private int getOutputSize(int tensorIndex, int dimension) {
+        try {
+            int[] shape = interpreter.getOutputTensor(tensorIndex).shape();
+            if (shape != null && shape.length > dimension) {
+                return shape[dimension];
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "无法获取输出张量形状: " + e.getMessage());
+        }
+        return -1;
+    }
+
+    /**
      * 将 Bitmap 转换为模型输入 ByteBuffer
-     * 归一化到 [0, 1] 区间
-     * @param bitmap 输入图像
+     * 归一化到 [0, 1] 区间，RGB 通道顺序
      */
     private void convertBitmapToBuffer(Bitmap bitmap) {
         inputImageBuffer.rewind();
@@ -321,7 +474,6 @@ public class TFLiteClassifier {
         for (int i = 0; i < inputSize; i++) {
             for (int j = 0; j < inputSize; j++) {
                 final int val = intValues[pixel++];
-                // 提取 RGB 通道并归一化
                 inputImageBuffer.putFloat(((val >> 16) & 0xFF) / NORMALIZE_VALUE); // R
                 inputImageBuffer.putFloat(((val >> 8) & 0xFF) / NORMALIZE_VALUE);  // G
                 inputImageBuffer.putFloat((val & 0xFF) / NORMALIZE_VALUE);         // B
@@ -329,15 +481,14 @@ public class TFLiteClassifier {
         }
     }
 
+    // ==================== 配置方法 ====================
+
     /**
      * 设置自定义标签列表
      * @param labels 标签列表
      */
     public void setLabels(List<String> labels) {
         this.labels = labels;
-        if (labels != null && !labels.isEmpty()) {
-            outputBuffer = new float[1][labels.size()];
-        }
     }
 
     /**
@@ -356,6 +507,8 @@ public class TFLiteClassifier {
         return isInitialized;
     }
 
+    // ==================== 资源释放 ====================
+
     /**
      * 释放模型资源
      * 必须在不再使用时调用，避免内存泄漏
@@ -364,10 +517,6 @@ public class TFLiteClassifier {
         if (interpreter != null) {
             interpreter.close();
             interpreter = null;
-        }
-        if (gpuDelegate != null) {
-            gpuDelegate.close();
-            gpuDelegate = null;
         }
         isInitialized = false;
         Log.i(TAG, "TFLite 资源已释放");

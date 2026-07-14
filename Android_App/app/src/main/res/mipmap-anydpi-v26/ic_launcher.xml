@@ -1,0 +1,12 @@
+<!--
+============================================================================
+文件名: ic_launcher.xml (mipmap-anydpi-v26)
+功能描述: Android 8.0+ 自适应图标
+  - 由背景层和前景层合成
+  - 支持 OEM 自定义遮罩形状（圆形、方形、圆角方形等）
+============================================================================
+-->
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@drawable/ic_launcher_background" />
+    <foreground android:drawable="@drawable/ic_launcher_foreground" />
+</adaptive-icon>

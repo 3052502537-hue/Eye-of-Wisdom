@@ -31,7 +31,6 @@ import android.util.Log;
 import com.smarteye.blindguide.data.AppConfig;
 import com.smarteye.blindguide.tts.TTSManager;
 
-import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
@@ -47,9 +46,6 @@ public class VoiceControl {
 
     /** 语音识别器 */
     private SpeechRecognizer speechRecognizer;
-
-    /** 上下文 */
-    private Context context;
 
     /** 是否正在监听 */
     private boolean isListening = false;
@@ -117,8 +113,6 @@ public class VoiceControl {
      * @return true 初始化成功
      */
     public boolean initialize(Context context) {
-        this.context = context;
-
         // 检查设备是否支持语音识别
         if (!SpeechRecognizer.isRecognitionAvailable(context)) {
             Log.e(TAG, "设备不支持语音识别");
@@ -260,13 +254,18 @@ public class VoiceControl {
         }
 
         @Override
-        public void onRumble(float rmsdB) {
+        public void onRmsChanged(float rmsdB) {
             // 音量变化
         }
 
         @Override
         public void onBufferReceived(byte[] buffer) {
             // 接收音频缓冲
+        }
+
+        @Override
+        public void onEvent(int eventType, Bundle params) {
+            // 预留事件处理
         }
 
         @Override

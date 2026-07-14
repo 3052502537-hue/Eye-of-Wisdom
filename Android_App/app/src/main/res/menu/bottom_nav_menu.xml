@@ -25,11 +25,10 @@
         android:icon="@android:drawable/ic_menu_preferences"
         android:title="设置" />
 
-    <!-- 调试导航项（默认隐藏，开发者模式激活后可见） -->
+    <!-- 调试导航项（直接可见） -->
     <item
         android:id="@+id/nav_debug"
         android:icon="@android:drawable/ic_menu_manage"
-        android:title="调试"
-        android:visible="false" />
+        android:title="开发者" />
 
 </menu>

@@ -23,9 +23,13 @@
 package com.smarteye.blindguide.logic;
 
 import com.smarteye.blindguide.ai.TFLiteClassifier;
+import com.smarteye.blindguide.ai.TFLiteClassifier.DetectedObject;
 import com.smarteye.blindguide.data.AppConfig;
 import com.smarteye.blindguide.network.Protocol;
 import com.smarteye.blindguide.tts.TTSManager;
+
+import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
  * 避障决策引擎
@@ -54,8 +58,8 @@ public class ObstacleAnalyzer {
     /** 当前融合策略 */
     private ObstacleStrategy strategy;
 
-    /** 分析结果回调监听器 */
-    private OnAnalysisResultListener resultListener;
+    /** 分析结果回调监听器列表（线程安全，支持多监听器） */
+    private final List<OnAnalysisResultListener> resultListeners = new CopyOnWriteArrayList<>();
 
     /**
      * 避障分析结果
@@ -168,10 +172,50 @@ public class ObstacleAnalyzer {
                 sensorRisk = AppConfig.RISK_CAUTION;
             }
 
-            // ==================== 视觉识别结果分析 ====================
+            // ==================== 视觉识别结果分析（目标检测） ====================
 
             int visionRisk = AppConfig.RISK_SAFE;
-            if (visionResult != null && visionResult.confidence > 0.5f) {
+
+            // 优先使用目标检测结果（detections 列表）
+            if (visionResult != null && visionResult.hasDetections()) {
+                List<DetectedObject> detections = visionResult.detections;
+                maxConfidence = detections.get(0).confidence;
+
+                for (DetectedObject det : detections) {
+                    if (det.confidence < 0.3f) {
+                        continue; // 跳过低置信度目标
+                    }
+
+                    String className = det.className;
+                    int objRisk = getClassRisk(className);
+
+                    // 位置感知：障碍物在画面中央时风险升级
+                    if (objRisk == AppConfig.RISK_DANGER && isCenterObject(det)) {
+                        obstacle.append("正前方有").append(className).append("，");
+                        advice.append("正前方").append(className).append("，请绕行，");
+                    } else if (objRisk == AppConfig.RISK_DANGER) {
+                        obstacle.append("前方有").append(className).append("，");
+                        advice.append(className).append("，请注意，");
+                        objRisk = AppConfig.RISK_CAUTION; // 非中央障碍物降级
+                    } else if (objRisk == AppConfig.RISK_CAUTION) {
+                        obstacle.append("前方有").append(className).append("，");
+                        advice.append(className).append("，请注意，");
+                    } else if (objRisk == AppConfig.RISK_SAFE && "盲道".equals(className)) {
+                        obstacle.append("前方有盲道，");
+                        advice.append("盲道可通行，");
+                    }
+
+                    visionRisk = Math.max(visionRisk, objRisk);
+                }
+
+                // 多目标汇总
+                if (detections.size() >= 3 && visionRisk >= AppConfig.RISK_CAUTION) {
+                    advice.append("前方有多项障碍物，请减速慢行，");
+                }
+
+            } else if (visionResult != null && visionResult.className != null
+                    && visionResult.confidence > 0.5f) {
+                // 兼容旧模型：单标签分类结果
                 maxConfidence = Math.max(maxConfidence, visionResult.confidence);
                 String className = visionResult.className;
 
@@ -180,7 +224,6 @@ public class ObstacleAnalyzer {
                     obstacle.append("前方有大型障碍物，");
                     advice.append("前方有障碍物，请绕行，");
                 } else if ("红绿灯".equals(className)) {
-                    // 红绿灯需进一步识别颜色（预留扩展）
                     obstacle.append("前方有红绿灯，");
                     advice.append("前方红绿灯，请注意，");
                     visionRisk = AppConfig.RISK_CAUTION;
@@ -194,9 +237,7 @@ public class ObstacleAnalyzer {
                     visionRisk = AppConfig.RISK_CAUTION;
                 } else if ("盲道".equals(className)) {
                     obstacle.append("前方有盲道，");
-                    // 盲道本身不构成风险，但提示用户
                     advice.append("前方有盲道，");
-                    visionRisk = AppConfig.RISK_SAFE;
                 }
             }
 
@@ -251,6 +292,33 @@ public class ObstacleAnalyzer {
             }
             return "可安全前进";
         }
+
+        /**
+         * 根据类别名称映射风险等级
+         * @param className 检测类别名
+         * @return 风险等级常量
+         */
+        private int getClassRisk(String className) {
+            if (className == null) return AppConfig.RISK_SAFE;
+            if (className.contains("障碍物")) {
+                return AppConfig.RISK_DANGER;
+            }
+            if (className.contains("红绿灯") || className.contains("斑马线")
+                    || className.contains("路口")) {
+                return AppConfig.RISK_CAUTION;
+            }
+            return AppConfig.RISK_SAFE;
+        }
+
+        /**
+         * 判断检测目标是否在画面中央区域
+         * 中央区域定义：水平中心在 25%~75% 范围内
+         * @param det 检测目标
+         * @return true 表示在画面中央
+         */
+        private boolean isCenterObject(DetectedObject det) {
+            return det.centerX > 0.25f && det.centerX < 0.75f;
+        }
     }
 
     /**
@@ -273,11 +341,32 @@ public class ObstacleAnalyzer {
     }
 
     /**
-     * 设置分析结果回调监听器
+     * 设置分析结果回调监听器（替换所有现有监听器，保持向后兼容）
      * @param listener 监听器
      */
     public void setOnAnalysisResultListener(OnAnalysisResultListener listener) {
-        this.resultListener = listener;
+        resultListeners.clear();
+        if (listener != null) {
+            resultListeners.add(listener);
+        }
+    }
+
+    /**
+     * 添加分析结果回调监听器（不影响现有监听器）
+     * @param listener 监听器
+     */
+    public void addOnAnalysisResultListener(OnAnalysisResultListener listener) {
+        if (listener != null && !resultListeners.contains(listener)) {
+            resultListeners.add(listener);
+        }
+    }
+
+    /**
+     * 移除分析结果回调监听器
+     * @param listener 监听器
+     */
+    public void removeOnAnalysisResultListener(OnAnalysisResultListener listener) {
+        resultListeners.remove(listener);
     }
 
     /**
@@ -332,15 +421,15 @@ public class ObstacleAnalyzer {
 
         // 风险等级变化检测
         if (result.riskLevel != lastRiskLevel) {
-            if (resultListener != null) {
-                resultListener.onRiskChanged(result.riskLevel, lastRiskLevel);
+            for (OnAnalysisResultListener listener : resultListeners) {
+                listener.onRiskChanged(result.riskLevel, lastRiskLevel);
             }
             lastRiskLevel = result.riskLevel;
         }
 
-        // 回调分析结果
-        if (resultListener != null) {
-            resultListener.onResult(result);
+        // 回调所有监听器：分析结果
+        for (OnAnalysisResultListener listener : resultListeners) {
+            listener.onResult(result);
         }
 
         // 根据工作模式触发 TTS 播报

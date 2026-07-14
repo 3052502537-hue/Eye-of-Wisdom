@@ -1,0 +1,33 @@
+/**
+ * ============================================================================
+ * 文件名: settings.gradle
+ * 功能描述: Gradle 项目设置文件
+ *   - 配置插件管理和依赖解析策略
+ *   - 声明项目包含的模块
+ * 依赖关系:
+ *   - 必须包含 app 模块
+ *   - pluginManagement 配置影响所有模块的插件解析
+ * ============================================================================
+ */
+
+pluginManagement {
+    repositories {
+        google()
+        mavenCentral()
+        gradlePluginPortal()
+    }
+}
+
+dependencyResolutionManagement {
+    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+    repositories {
+        google()
+        mavenCentral()
+    }
+}
+
+// 项目名称
+rootProject.name = "Android_App"
+
+// 包含 app 模块
+include ':app'

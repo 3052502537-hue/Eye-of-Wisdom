@@ -92,6 +92,13 @@ private:
     bool    _initialized;   // 初始化标志
     uint8_t _lastError;     // 最近错误码
     uint32_t _lastReadMs;   // 上次成功读取时间戳
+
+    /* 滑动窗口滤波 (5样本) */
+    static const uint8_t FILTER_WINDOW = 5;
+    float   _filterBuf[5];  // 环形缓冲
+    uint8_t _filterIdx;     // 当前写入位置
+    uint8_t _filterCount;   // 已填充样本数
+    float   _filterSum;     // 累加和(避免每次重算)
 };
 
 #endif /* SDM10_DRIVER_H */

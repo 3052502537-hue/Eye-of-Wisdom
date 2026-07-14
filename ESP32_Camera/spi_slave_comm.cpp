@@ -305,12 +305,12 @@ bool SpiSlaveComm::sendHeartbeat(uint32_t timestamp)
         return false;
     }
 
-    /* 心跳数据: 4字节时间戳 */
+    /* 心跳数据: 4字节时间戳(小端序, 与项目其他多字节字段一致) */
     uint8_t hbData[4];
-    hbData[0] = (timestamp >> 24) & 0xFF;
-    hbData[1] = (timestamp >> 16) & 0xFF;
-    hbData[2] = (timestamp >> 8) & 0xFF;
-    hbData[3] = timestamp & 0xFF;
+    hbData[0] = timestamp & 0xFF;
+    hbData[1] = (timestamp >> 8) & 0xFF;
+    hbData[2] = (timestamp >> 16) & 0xFF;
+    hbData[3] = (timestamp >> 24) & 0xFF;
 
     uint32_t frameLen = 0;
     bool ok = _buildFrame(SPI_CMD_HEARTBEAT, hbData, 4, _txBuffer, &frameLen);

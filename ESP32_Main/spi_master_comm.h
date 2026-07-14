@@ -103,6 +103,7 @@ private:
     bool sendFrame(uint8_t cmd, const uint8_t* payload, uint16_t len);
 
     SPIClass*  _spi;               // SPI 实例(FSPI)
+    SemaphoreHandle_t _spiMutex;   // SPI 总线互斥锁(读/写仲裁)
     bool       _initialized;       // 初始化标志
     bool       _frameReady;        // 完整帧就绪标志
     bool       _frameInProg;       // 帧接收进行中标志

@@ -1,0 +1,23 @@
+/**
+ * ============================================================================
+ * 文件名: build.gradle (项目级)
+ * 功能描述: Android 项目级 Gradle 构建配置
+ *   - 声明 Android Gradle Plugin (AGP) 版本
+ *   - 配置 Maven 中央仓库和 Google 仓库
+ * 依赖关系:
+ *   - 被 settings.gradle 引用
+ *   - 所有模块继承此配置
+ * ============================================================================
+ */
+
+// Gradle 插件声明（版本号在 settings.gradle 中统一管理）
+plugins {
+    id 'com.android.application' version '8.7.3' apply false
+}
+
+// 仓库统一在 settings.gradle 的 dependencyResolutionManagement 中管理，此处不再重复声明
+
+// 清理任务
+tasks.register('clean', Delete) {
+    delete rootProject.layout.buildDirectory
+}

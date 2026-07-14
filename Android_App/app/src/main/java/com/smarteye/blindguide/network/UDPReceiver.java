@@ -23,6 +23,8 @@ import com.smarteye.blindguide.data.AppConfig;
 import java.net.DatagramPacket;
 import java.net.DatagramSocket;
 import java.net.SocketException;
+import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -51,8 +53,8 @@ public class UDPReceiver {
     /** 线程池，单线程接收 */
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
 
-    /** 图像帧回调监听器 */
-    private OnImageFrameListener frameListener;
+    /** 图像帧回调监听器列表（线程安全，支持多监听器） */
+    private final List<OnImageFrameListener> frameListeners = new CopyOnWriteArrayList<>();
 
     /** 接收端口 */
     private final int port;
@@ -66,8 +68,8 @@ public class UDPReceiver {
     /** 上一帧帧号，用于丢包检测 */
     private int lastFrameNumber = -1;
 
-    /** 接收状态回调监听器 */
-    private OnReceiveStateListener stateListener;
+    /** 接收状态回调监听器列表（线程安全） */
+    private final List<OnReceiveStateListener> stateListeners = new CopyOnWriteArrayList<>();
 
     /**
      * 图像帧回调接口
@@ -110,19 +112,43 @@ public class UDPReceiver {
     }
 
     /**
-     * 设置图像帧回调监听器
+     * 设置图像帧回调监听器（替换所有现有监听器）
      * @param listener 监听器实例
      */
     public void setOnImageFrameListener(OnImageFrameListener listener) {
-        this.frameListener = listener;
+        frameListeners.clear();
+        if (listener != null) {
+            frameListeners.add(listener);
+        }
     }
 
     /**
-     * 设置接收状态回调监听器
+     * 添加图像帧回调监听器（不影响现有监听器）
+     * @param listener 监听器实例
+     */
+    public void addOnImageFrameListener(OnImageFrameListener listener) {
+        if (listener != null && !frameListeners.contains(listener)) {
+            frameListeners.add(listener);
+        }
+    }
+
+    /**
+     * 移除图像帧回调监听器
+     * @param listener 监听器实例
+     */
+    public void removeOnImageFrameListener(OnImageFrameListener listener) {
+        frameListeners.remove(listener);
+    }
+
+    /**
+     * 设置接收状态回调监听器（替换所有现有监听器）
      * @param listener 监听器实例
      */
     public void setOnReceiveStateListener(OnReceiveStateListener listener) {
-        this.stateListener = listener;
+        stateListeners.clear();
+        if (listener != null) {
+            stateListeners.add(listener);
+        }
     }
 
     /**
@@ -190,9 +216,9 @@ public class UDPReceiver {
                         }
                         lastFrameNumber = frame.frameNumber;
 
-                        // 回调图像帧
-                        if (frameListener != null) {
-                            frameListener.onImageFrame(frame);
+                        // 回调所有监听器：图像帧
+                        for (OnImageFrameListener listener : frameListeners) {
+                            listener.onImageFrame(frame);
                         }
                     }
                 } catch (SocketException e) {
@@ -203,9 +229,6 @@ public class UDPReceiver {
                     break;
                 } catch (Exception e) {
                     // 单个包解析失败，继续接收下一个
-                    if (isRunning.get()) {
-                        // 可在此处回调错误信息
-                    }
                 }
             }
         } catch (SocketException e) {
@@ -223,8 +246,8 @@ public class UDPReceiver {
      * @param message 状态描述
      */
     private void notifyStateChanged(int state, String message) {
-        if (stateListener != null) {
-            stateListener.onStateChanged(state, message);
+        for (OnReceiveStateListener listener : stateListeners) {
+            listener.onStateChanged(state, message);
         }
     }
 
