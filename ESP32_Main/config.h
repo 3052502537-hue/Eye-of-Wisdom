@@ -1,6 +1,10 @@
 /* ============================================================
  * 文件名: config.h
- * 功能描述: 导盲头环主控板（ESP32-S3-N16R8）全局配置中心
+ * 功能描述: 导盲头环主控板（ESP32-S3-N16R8）全局配置中心 v3.0
+ *           v3.0: 彻底移除 Rd-03D 毫米波雷达、SPI 主机通信
+ *                 保留 HC-SR04 超声波 + SDM10 激光测距
+ *                 摄像板独立通过WiFi STA连接主控AP，手机直连摄像板HTTP拉流
+ *                 任务精简为 4 个（无 SPI 任务）
  *           集中管理所有引脚定义、硬件参数、WiFi配置、任务调度参数、
  *           预警阈值等。修改硬件接线后只需修改本文件即可。
  * 依赖关系: 无外部依赖，被所有其他模块引用
@@ -9,15 +13,28 @@
  * 硬件平台: ESP32-S3-N16R8（16MB Flash / 8MB PSRAM，八线PSRAM）
  * 开发环境: Arduino IDE + ESP32 Arduino Core（需开启 USB CDC On Boot）
  *
- * 引脚分配总览（已避开N16R8八线Flash/PSRAM占用引脚GPIO27~37）:
+ * 系统架构 (v3.0):
+ *   ┌──────────────────┐       TCP:8888 (JSON)      ┌──────────┐
+ *   │  ESP32_Main 主控  │ ◄────────────────────────► │ 手机 App  │
+ *   │  HC-SR04 + SDM10  │                            │          │
+ *   │  WiFi AP 热点     │                            │ 传感器显示 │
+ *   └────────┬─────────┘                            │ AI视觉    │
+ *            │ WiFi AP                               └────┬─────┘
+ *   ┌────────┴─────────┐                            HTTP拉流 │
+ *   │  ESP32_Camera    │ ◄──────────────────────────┤ /video   │
+ *   │  OV2640 + WiFi   │                            │ /capture │
+ *   │  STA 连接主控AP   │                            └──────────┘
+ *   └──────────────────┘
+ *
+ * 引脚分配总览（v3.0 精简版）:
  *   UART1  -> SDM10 前向激光测距          (TX=GPIO17, RX=GPIO18)
- *   UART0  -> RD-03D 前向毫米波雷达        (TX=GPIO6, RX=GPIO7)
- *   UART2  -> RD-03D 后向毫米波雷达        (TX=GPIO4, RX=GPIO5)
- *   SPI    -> 摄像头板从机通信             (MOSI=11, MISO=13, SCK=12, CS=10)
- *   数据就绪中断 <- 摄像头板               (GPIO9, 下降沿触发)
+ *   GPIO   -> HC-SR04 前向超声波           (Trig=GPIO4, Echo=GPIO5)
  *   蜂鸣器 PWM                            (GPIO47)
  *   WS2812 RGB LED                        (GPIO48)
  *   调试串口 -> USB CDC（不占用任何UART引脚）
+ *
+ * 已释放引脚（可供未来扩展）:
+ *   GPIO6-13, GPIO19-20, GPIO38-45
  * ============================================================ */
 
 #ifndef CONFIG_H
@@ -37,9 +54,7 @@
 #endif
 
 /* ============================================================
- * 二、传感器 UART 引脚配置
- *    ESP32-S3 共3个硬件UART，且支持 USB CDC 调试口
- *    因此3个UART全部可用于传感器，调试走USB CDC不占UART
+ * 二、传感器引脚配置
  *
  *    命名约定: *_RX 表示 ESP32 的 TX（发往传感器）
  *              *_TX 表示 ESP32 的 RX（接收传感器输出）
@@ -48,8 +63,7 @@
 /* 前向 SDM10 激光测距 —— UART1
  * 量程10m(SDM10标准版, V2.0数据手册)，精度±5cm(<5m)/1%(≥5m)，5V供电，UART输出
  * 协议: 帧头0x5C + 距离2B LE(mm) + 校验和(~(DIST_L+DIST_H)) = 4字节, 波特率460800
- * 输出模式: 上电自动连续输出 50Hz
- * 用户确认: 使用标准版SDM10(非长距版) */
+ * 输出模式: 上电自动连续输出 50Hz */
 #define PIN_SDM10_RX               17        // ESP32 TX -> SDM10 RX
 #define PIN_SDM10_TX               18        // SDM10 TX  -> ESP32 RX
 #define SDM10_UART                 Serial1   // Arduino: Serial1 对应 UART1
@@ -57,53 +71,16 @@
 #define SDM10_MAX_RANGE_CM         1000      // 最大量程 10m = 1000cm(标准版,90%反射率)
 #define SDM10_INVALID_DISTANCE     (-1.0f)   // 无效距离标识
 
-/* 前向 RD-03D 毫米波雷达 —— UART0
- * 24GHz FMCW, 检测运动目标, 距离0.5-8m, 角度±60°, 最多3目标
- * 协议: 256000bps 8N1, 连续二进制输出 X/Y/Speed
- * 注意: GPIO19/20 在N16R8板上硬连USB-C OTG接口, 不可用作UART.
- *       已改为GPIO6/7(板上空闲GPIO)
- *       UART0用于前雷达(Serial0已验证可用) */
-#define PIN_RADAR_FRONT_RX         6         // ESP32 TX -> 雷达 RX (GPIO6, 避开USB OTG)
-#define PIN_RADAR_FRONT_TX         7         // 雷达 TX  -> ESP32 RX (GPIO7, 避开USB OTG)
-#define RADAR_FRONT_UART           Serial0   // Arduino: Serial0 对应 UART0
-#define RADAR_BAUDRATE             256000    // RD-03D 默认波特率(实测256000)
-#define RADAR_MAX_TARGETS          3         // 单帧最多目标数(实测3目标)
-
-/* 后向 RD-03D 毫米波雷达 —— UART2
- * 因为调试口走 USB CDC，UART0 被释放用于前雷达
- * 后雷达使用 UART2
- * 注意: 必须在 Arduino IDE 开启 "USB CDC On Boot"
- * 协议同前雷达: 256000bps 8N1 */
-#define PIN_RADAR_REAR_RX          4         // ESP32 TX -> 雷达 RX (GPIO4, 避开CP2102/CH340)
-#define PIN_RADAR_REAR_TX          5         // 雷达 TX  -> ESP32 RX (GPIO5, 避开CP2102/CH340)
-#define RADAR_REAR_UART            Serial2   // Arduino: Serial2 对应 UART2
-
-/* 传感器自检超时（ms）—— 上电自检时等待传感器应答的最大时间 */
-#define SENSOR_SELFTEST_TIMEOUT_MS 500
+/* 前向 HC-SR04 超声波测距 —— GPIO 直连 (v2.0: 替代 Rd-03D)
+ * 量程 2cm-400cm，精度 ±3mm，Trig 发 10μs 脉冲，Echo 测回波脉宽
+ * GPIO4/5 为原后雷达引脚释放，板上完全空闲 */
+#define PIN_HCSR04_TRIG             4         // ESP32 → HC-SR04 Trig
+#define PIN_HCSR04_ECHO             5         // HC-SR04 Echo → ESP32
+#define HCSR04_MAX_RANGE_CM         400       // HC-SR04 最大量程 4m
+#define HCSR04_TIMEOUT_US           25000     // pulseIn 超时 ≈4.3m@343m/s
 
 /* ============================================================
- * 三、SPI 主机通信引脚（连接摄像头板从机）
- *    主控板为 SPI Master，摄像头板为 SPI Slave
- *    摄像头板有数据就绪时拉低中断引脚，主控再发起读取
- *
- *    接线对应:
- *      摄像头板 SPI_MOSI -> 主控 PIN_SPI_MOSI
- *      摄像头板 SPI_MISO -> 主控 PIN_SPI_MISO
- *      摄像头板 SPI_SCK  -> 主控 PIN_SPI_SCK
- *      摄像头板 SPI_CS   -> 主控 PIN_SPI_CS
- *      摄像头板 DATA_RDY -> 主控 PIN_SPI_DATA_READY
- *      GND               -> GND（必须共地）
- * ============================================================ */
-#define PIN_SPI_MOSI               11        // SPI 主机输出 从机输入
-#define PIN_SPI_MISO               13        // SPI 主机输入 从机输出
-#define PIN_SPI_SCK                12        // SPI 时钟
-#define PIN_SPI_CS                 10        // 片选（主控输出，低有效）
-#define PIN_SPI_DATA_READY         9         // 摄像头板数据就绪中断输入(下降沿)
-#define SPI_CLOCK_SPEED            8000000UL // SPI 时钟 8MHz（可按连线质量调整）
-#define SPI_DMA_BUFFER_SIZE        4096      // 单次DMA读取最大字节数
-
-/* ============================================================
- * 四、蜂鸣器与RGB LED 引脚
+ * 三、蜂鸣器与RGB LED 引脚
  * ============================================================ */
 
 /* 蜂鸣器 —— GPIO PWM 控制，仅极危险情况和自检时响 */
@@ -117,27 +94,30 @@
 #define RGB_LED_COUNT              1         // LED 数量
 
 /* ============================================================
- * 五、WiFi AP 配置
- *    ESP32 作为 AP 热点，手机连接 ESP32 进行通信
+ * 四、WiFi AP 配置
+ *    ESP32 作为 AP 热点，手机 + 摄像头板连接 ESP32 进行通信
  * ============================================================ */
 #define WIFI_AP_SSID               "BlindGuide_AP"         // 热点名称(与Android APP一致)
 #define WIFI_AP_PASSWORD           "12345678"              // 密码(至少8位)
 #define WIFI_AP_CHANNEL            1                       // 信道
-#define WIFI_AP_MAX_CONNECTIONS    4                       // 最大连接数
+#define WIFI_AP_MAX_CONNECTIONS    4                       // 最大连接数(手机+摄像头板)
 #define WIFI_AP_HIDDEN             false                   // 是否隐藏SSID
 
 /* 通信端口 */
 #define TCP_PORT                   8888     // TCP端口: 传感器JSON数据传输(与Android APP一致)
-#define UDP_PORT                   8889     // UDP端口: 图像JPEG二进制传输(与Android APP一致)
 #define WEB_SERVER_PORT            80       // Web配置页面端口
 
 /* 客户端缓冲 */
 #define TCP_MAX_CLIENTS            4        // TCP最大客户端数
 #define TCP_SEND_BUFFER_SIZE       2048     // TCP单次发送缓冲
-#define UDP_PACKET_MAX_SIZE        1460     // UDP单包最大字节数(留余量)
+
+/* 摄像板 ESP32 WiFi STA 配置 (v3.0: 摄像板独立连接主控AP)
+ * 主控通过 JSON 将摄像板 IP 告知手机 App，手机直连摄像板拉流 */
+#define CAMERA_ESP32_STATIC_IP     "192.168.4.10"   // 摄像板静态IP（AP子网内）
+#define CAMERA_HTTP_PORT           80                // 摄像板HTTP服务端口
 
 /* ============================================================
- * 六、预警距离阈值（单位: 米）
+ * 五、预警距离阈值（单位: 米）
  *    用于主控决策任务判断危险等级
  * ============================================================ */
 #define WARN_DISTANCE_ATTENTION    3.0f     // >此值: 安全
@@ -146,47 +126,37 @@
 #define WARN_DEBOUNCE_FRAMES       3        // 连续N帧确认才触发预警
 
 /* ============================================================
- * 七、图像参数
- * ============================================================ */
-#define IMG_FRAME_WIDTH            320      // QVGA 宽
-#define IMG_FRAME_HEIGHT           240      // QVGA 高
-#define IMG_JPEG_QUALITY           10       // JPEG质量(1-31, 越小质量越高)
-#define IMG_MAX_JPEG_SIZE          (60 * 1024)  // 单帧JPEG最大字节数
-
-/* ============================================================
- * 八、FreeRTOS 任务配置
+ * 六、FreeRTOS 任务配置
+ *    v2.0: 4个任务 (删除 taskSpi)
  *    数值越大优先级越高
  * ============================================================ */
 
 /* 任务优先级 */
-#define TASK_PRIORITY_SENSOR       5        // 传感器采集任务
-#define TASK_PRIORITY_SPI          6        // SPI通信任务(图像接收)
-#define TASK_PRIORITY_WIFI         4        // WiFi通信任务
-#define TASK_PRIORITY_DECISION     6        // 主控决策任务
+#define TASK_PRIORITY_SENSOR       5        // 传感器采集任务(激光+超声波)
+#define TASK_PRIORITY_WIFI         4        // WiFi通信任务(TCP传感器上报)
+#define TASK_PRIORITY_DECISION     6        // 主控决策任务(危险等级+报警)
 #define TASK_PRIORITY_WEB          3        // Web服务任务
 
 /* 任务栈大小（单位: 字节） */
 #define TASK_STACK_SENSOR          4096
-#define TASK_STACK_SPI             10240    // SPI需要较大缓冲
-#define TASK_STACK_WIFI            8192     // WiFi+TCP/UDP需要较大栈
+#define TASK_STACK_WIFI            8192     // WiFi+TCP需要较大栈
 #define TASK_STACK_DECISION        4096
 #define TASK_STACK_WEB             8192     // Web服务器需要较大栈
 
 /* 任务周期（ms） */
 #define TASK_PERIOD_SENSOR_MS      50       // 传感器采集周期 20Hz
 #define TASK_PERIOD_DECISION_MS    100      // 决策周期 10Hz
-#define TASK_PERIOD_WIFI_TX_MS     100      // WiFi数据上报周期
+#define TASK_PERIOD_WIFI_TX_MS     100      // WiFi数据上报周期 (v2.0: 仅传感器JSON)
 
 /* 任务核心绑定（ESP32-S3 双核: 0=PRO, 1=APP）
  *   tskNO_AFFINITY 表示不绑定，由调度器决定 */
 #define TASK_CORE_SENSOR           1        // 传感器 -> 核1
-#define TASK_CORE_SPI              0        // SPI -> 核0
 #define TASK_CORE_WIFI             0        // WiFi -> 核0
 #define TASK_CORE_DECISION         1        // 决策 -> 核1
 #define TASK_CORE_WEB              0        // Web -> 核0
 
 /* ============================================================
- * 九、系统状态枚举（供RGB指示灯使用）
+ * 七、系统状态枚举（供RGB指示灯使用）
  * ============================================================ */
 #define SYS_STATE_POWER_ON         0        // 上电(蓝)
 #define SYS_STATE_INIT             1        // 初始化中(蓝闪)

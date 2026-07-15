@@ -6,7 +6,7 @@
  *   - 包含网络通信参数、模式定义、风险等级、UI参数等
  *   - 采用单例模式管理运行时动态配置
  * 依赖关系:
- *   - 被 TCPClient、UDPReceiver、ObstacleAnalyzer 等模块引用
+ *   - 被 TCPClient、CameraHttpClient、ObstacleAnalyzer 等模块引用
  *   - 被 SettingsFragment 读取和修改
  * 接口说明:
  *   - getInstance(): 获取单例实例
@@ -30,20 +30,17 @@ public class AppConfig {
     /** TCP 传感器数据接收端口 */
     public static final int TCP_PORT = 8888;
 
-    /** UDP 图像数据接收端口 */
-    public static final int UDP_PORT = 8889;
+    /** 摄像板 ESP32 默认 IP (WiFi STA 静态IP，连接主控AP后) */
+    public static final String CAMERA_ESP32_IP = "192.168.4.10";
+
+    /** 摄像板 HTTP 服务端口 */
+    public static final int CAMERA_HTTP_PORT = 80;
 
     /** TCP 连接超时时间（毫秒） */
     public static final int TCP_TIMEOUT_MS = 5000;
 
     /** TCP 接收缓冲区大小（字节） */
     public static final int TCP_BUFFER_SIZE = 4096;
-
-    /** UDP 接收缓冲区大小（字节），单帧 JPEG 最大长度 */
-    public static final int UDP_BUFFER_SIZE = 65536;
-
-    /** UDP 图像接收超时（毫秒），超过此时间无数据认为断连 */
-    public static final int UDP_TIMEOUT_MS = 3000;
 
     // ==================== 工作模式定义 ====================
 

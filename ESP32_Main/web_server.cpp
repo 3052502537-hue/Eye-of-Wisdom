@@ -145,10 +145,8 @@ void WebServerManager::handleStatus()
     json += "\"type\":\"status\",";
     json += "\"laser\":{\"dist\":" + String(_sensor.laser.distance, 2) +
             ",\"valid\":" + String(_sensor.laser.valid) + "},";
-    json += "\"radar_f\":{\"count\":" + String(_sensor.radarFront.count) +
-            ",\"valid\":" + String(_sensor.radarFront.valid) + "},";
-    json += "\"radar_r\":{\"count\":" + String(_sensor.radarRear.count) +
-            ",\"valid\":" + String(_sensor.radarRear.valid) + "},";
+    json += "\"ultrasonic\":{\"dist\":" + String(_sensor.ultrasonicDist, 2) + "},";
+    json += "\"camera_ip\":\"" + String(CAMERA_ESP32_STATIC_IP) + "\",";
     json += "\"level\":" + String(_sensor.level) + ",";
     json += "\"warn\":{\"att\":" + String(_warn.attention, 2) +
             ",\"war\":" + String(_warn.warning, 2) +

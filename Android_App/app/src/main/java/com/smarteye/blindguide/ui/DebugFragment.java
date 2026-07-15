@@ -1,18 +1,16 @@
 /**
  * ============================================================================
  * 文件名: DebugFragment.java
- * 功能描述:
- *   - 开发者调试页面 Fragment（连续点击标题5次激活）
- *   - 通过 DebugDataListener 接口从 MainActivity 获取数据（不覆盖主回调）
- *   - 视频预览：DetectionOverlayView 显示 JPEG + AI 检测框叠加
- *   - 原始传感器数据：激光/前后雷达的驱动层原始输出
- *   - 处理后数据：危险等级/最近距离/防抖状态/避障建议/视觉检测数量
- *   - 网络统计：TCP状态/UDP帧数/丢包率
- *   - 运行日志：带时间戳的调试信息
- * 依赖关系:
- *   - 实现 MainActivity.DebugDataListener 接口
- *   - 依赖 DetectionOverlayView 自定义 View
- *   - 依赖 AppConfig 读取阈值配置
+ * 功能描述: 开发者调试页面 Fragment v3.0
+ *   v3.0: 移除雷达(UDP)引用，新增HC-SR04雷达可视化、SDM10激光显示
+ *         双屏视频：AI检测框叠加 + 原图直出
+ *         摄像板IP动态获取(来自传感器JSON)
+ *
+ *   - HC-SR04 超声波雷达可视化 (RadarView 扇形显示)
+ *   - SDM10 激光测距数字显示
+ *   - AI检测框叠加视频预览 (DetectionOverlayView)
+ *   - 原图直出预览 (HTTP MJPEG 从摄像板拉流)
+ *   - 传感器原始数据、处理后数据、网络统计、运行日志
  * ============================================================================
  */
 package com.smarteye.blindguide.ui;
@@ -40,7 +38,6 @@ import com.smarteye.blindguide.data.AppConfig;
 import com.smarteye.blindguide.logic.ObstacleAnalyzer;
 import com.smarteye.blindguide.network.CameraHttpClient;
 import com.smarteye.blindguide.network.Protocol;
-import com.smarteye.blindguide.network.UDPReceiver;
 
 import java.text.SimpleDateFormat;
 import java.util.Date;
@@ -48,27 +45,27 @@ import java.util.List;
 import java.util.Locale;
 
 /**
- * 开发者调试页面 Fragment
- * 通过 DebugDataListener 获取数据，不覆盖主业务回调
+ * 开发者调试页面 Fragment v3.0
  */
 public class DebugFragment extends Fragment implements MainActivity.DebugDataListener {
 
     // ==================== 视图引用 ====================
 
-    /** 视频预览 + AI 检测框叠加 */
+    /** HC-SR04 超声波雷达可视化 */
+    private RadarView radarView;
+
+    /** AI检测框叠加预览 */
     private DetectionOverlayView detectionOverlay;
 
-    /** v1.1: 原始视频直出 (无叠加) */
+    /** 原图直出 */
     private ImageView imageRawVideo;
     private TextView textRawVideoInfo;
-
-    /** 帧信息 */
     private TextView textFrameInfo;
 
-    /** 原始传感器数据 */
-    private TextView textRawLaser;
-    private TextView textRawRadarFront;
-    private TextView textRawRadarRear;
+    /** 传感器数据 */
+    private TextView textLaserDist;
+    private TextView textUltrasonicDist;
+    private TextView textCameraIp;
     private TextView textRawTimestamp;
 
     /** 处理后数据 */
@@ -86,32 +83,17 @@ public class DebugFragment extends Fragment implements MainActivity.DebugDataLis
     private ScrollView scrollLog;
     private Button btnClearLog;
     private Button btnResetStats;
-
-    /** HTTP 摄像头直连按钮 */
     private Button btnHttpCamera;
 
     // ==================== 状态数据 ====================
 
-    /** MainActivity 引用 */
     private MainActivity activity;
-
-    /** HTTP 摄像头客户端 */
     private CameraHttpClient httpCamera;
-
-    /** HTTP 摄像头是否正在运行 */
     private boolean isHttpCameraRunning = false;
-
-    /** 主线程 Handler */
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
-
-    /** 时间格式化 */
     private final SimpleDateFormat timeFormat =
             new SimpleDateFormat("HH:mm:ss.SSS", Locale.getDefault());
-
-    /** 日志最大行数 */
     private static final int MAX_LOG_LINES = 200;
-
-    /** 日志缓冲区 */
     private final StringBuilder logBuilder = new StringBuilder();
 
     /** 帧率统计 */
@@ -119,11 +101,14 @@ public class DebugFragment extends Fragment implements MainActivity.DebugDataLis
     private int frameCountSinceLastUpdate = 0;
     private float currentFps = 0;
 
-    /** 最近一次传感器数据（用于处理后数据显示） */
+    /** 最新传感器数据 */
     private Protocol.SensorData lastSensorData;
 
-    /** 最近一次识别结果 */
+    /** 最新识别结果 */
     private TFLiteClassifier.ClassifyResult lastClassifyResult;
+
+    /** 摄像板IP（从传感器JSON动态获取） */
+    private String cameraIp = AppConfig.CAMERA_ESP32_IP;
 
     // ==================== 生命周期 ====================
 
@@ -136,22 +121,22 @@ public class DebugFragment extends Fragment implements MainActivity.DebugDataLis
         return view;
     }
 
-    /**
-     * 绑定视图
-     */
     private void bindViews(View view) {
+        // HC-SR04 雷达视图
+        radarView = view.findViewById(R.id.radar_view);
+
         // 视频预览
         detectionOverlay = view.findViewById(R.id.detection_overlay);
         textFrameInfo = view.findViewById(R.id.text_frame_info);
 
-        // v1.1: 原始视频直出
+        // 原图直出
         imageRawVideo = view.findViewById(R.id.image_raw_video);
         textRawVideoInfo = view.findViewById(R.id.text_raw_video_info);
 
-        // 原始传感器数据
-        textRawLaser = view.findViewById(R.id.text_raw_laser);
-        textRawRadarFront = view.findViewById(R.id.text_raw_radar_front);
-        textRawRadarRear = view.findViewById(R.id.text_raw_radar_rear);
+        // 传感器数据
+        textLaserDist = view.findViewById(R.id.text_laser_dist);
+        textUltrasonicDist = view.findViewById(R.id.text_ultrasonic_dist);
+        textCameraIp = view.findViewById(R.id.text_camera_ip);
         textRawTimestamp = view.findViewById(R.id.text_raw_timestamp);
 
         // 处理后数据
@@ -172,9 +157,6 @@ public class DebugFragment extends Fragment implements MainActivity.DebugDataLis
         btnHttpCamera = view.findViewById(R.id.btn_http_camera);
     }
 
-    /**
-     * 设置按钮监听器
-     */
     private void setupListeners() {
         btnClearLog.setOnClickListener(v -> {
             logBuilder.setLength(0);
@@ -183,14 +165,14 @@ public class DebugFragment extends Fragment implements MainActivity.DebugDataLis
         });
 
         btnResetStats.setOnClickListener(v -> {
-            if (activity != null && activity.getUdpReceiver() != null) {
-                activity.getUdpReceiver().resetStatistics();
-                updateNetworkStats();
-                appendLog("统计已重置");
-            }
+            frameCountSinceLastUpdate = 0;
+            lastFrameTime = 0;
+            currentFps = 0;
+            if (httpCamera != null) httpCamera.resetStatistics();
+            updateNetworkStats();
+            appendLog("统计已重置");
         });
 
-        // HTTP 摄像头直连按钮
         if (btnHttpCamera != null) {
             btnHttpCamera.setOnClickListener(v -> toggleHttpCamera());
         }
@@ -205,23 +187,20 @@ public class DebugFragment extends Fragment implements MainActivity.DebugDataLis
     @Override
     public void onResume() {
         super.onResume();
-        // 注册为调试数据监听器（不覆盖主回调）
         if (activity != null) {
             activity.addDebugDataListener(this);
         }
         updateNetworkStats();
-        appendLog("调试页面已就绪");
-        appendLog("监听模式: 附加监听 (主回调不受影响)");
+        appendLog("调试页面 v3.0 已就绪");
+        appendLog("传感器: SDM10激光 + HC-SR04超声波");
     }
 
     @Override
     public void onPause() {
         super.onPause();
-        // 注销调试数据监听器
         if (activity != null) {
             activity.removeDebugDataListener(this);
         }
-        // 停止 HTTP 摄像头
         stopHttpCamera();
     }
 
@@ -230,9 +209,18 @@ public class DebugFragment extends Fragment implements MainActivity.DebugDataLis
     @Override
     public void onSensorData(Protocol.SensorData data) {
         this.lastSensorData = data;
+
+        // 动态更新摄像板IP
+        if (data.camera_ip != null && !data.camera_ip.isEmpty()
+                && !data.camera_ip.equals(cameraIp)) {
+            cameraIp = data.camera_ip;
+            appendLog("摄像板IP更新: " + cameraIp);
+        }
+
         mainHandler.post(() -> {
-            updateRawSensorData(data);
-            updateProcessedData(data, null);
+            updateSensorDisplay(data);
+            updateRadarView(data);
+            updateProcessedData(data, lastClassifyResult);
             updateNetworkStats();
         });
     }
@@ -249,11 +237,9 @@ public class DebugFragment extends Fragment implements MainActivity.DebugDataLis
     public void onClassifyResult(TFLiteClassifier.ClassifyResult result) {
         this.lastClassifyResult = result;
         mainHandler.post(() -> {
-            // 更新检测框叠加层
             if (result.hasDetections()) {
                 detectionOverlay.setDetections(result.detections);
             }
-            // 更新处理后数据中的视觉检测信息
             updateProcessedData(lastSensorData, result);
         });
     }
@@ -261,34 +247,82 @@ public class DebugFragment extends Fragment implements MainActivity.DebugDataLis
     @Override
     public void onAnalysisResult(ObstacleAnalyzer.AnalysisResult result) {
         mainHandler.post(() -> {
-            updateAnalysisResult(result);
+            if (result != null && result.adviceText != null && !result.adviceText.isEmpty()) {
+                textAdvice.setText("避障建议: " + result.adviceText);
+            }
         });
     }
 
     // ==================== 数据更新方法 ====================
 
     /**
-     * 更新视频预览
+     * 更新HC-SR04雷达视图
+     */
+    private void updateRadarView(Protocol.SensorData data) {
+        if (data == null || radarView == null) return;
+
+        boolean usOnline = (data.ultrasonic > 0);
+        radarView.updateUltrasonic(
+                usOnline ? data.ultrasonic : -1f,
+                usOnline);
+        radarView.updateLaser(data.laser_front > 0 ? data.laser_front : -1f);
+        radarView.updateDangerLevel(data.level);
+    }
+
+    /**
+     * 更新传感器数据显示
+     */
+    private void updateSensorDisplay(Protocol.SensorData data) {
+        // SDM10 激光距离
+        if (data.laser_front > 0) {
+            textLaserDist.setText(String.format("🔴 SDM10激光: %.2f m (50Hz, ±5cm精度)",
+                    data.laser_front));
+        } else {
+            textLaserDist.setText("🔴 SDM10激光: 无数据");
+        }
+
+        // HC-SR04 超声波距离
+        if (data.ultrasonic > 0) {
+            textUltrasonicDist.setText(String.format("🔵 HC-SR04超声波: %.2f m (2cm~4m量程)",
+                    data.ultrasonic));
+        } else {
+            textUltrasonicDist.setText("🔵 HC-SR04超声波: 无回波(超量程或故障)");
+        }
+
+        // 摄像板IP
+        textCameraIp.setText(String.format("📷 摄像板: %s (HTTP直连拉流)",
+                (data.camera_ip != null && !data.camera_ip.isEmpty())
+                        ? data.camera_ip : "未获取"));
+
+        // 时间戳 + 系统状态
+        textRawTimestamp.setText(String.format("帧时间戳: %s | 电量: %d%% | 模式: %s | ESP32等级: %d",
+                timeFormat.format(new Date(data.timestamp)),
+                data.battery,
+                AppConfig.getModeName(data.mode),
+                data.level));
+    }
+
+    /**
+     * 更新视频预览 (AI叠加 + 原图)
      */
     private void updateVideoPreview(Protocol.ImageFrame frame) {
         try {
             if (frame.jpegData != null && frame.jpegData.length > 0) {
-                // 解码 JPEG
                 android.graphics.Bitmap bmp = BitmapFactory.decodeByteArray(
                         frame.jpegData, 0, frame.jpegData.length);
 
                 if (bmp != null) {
-                    // 设置到两个视图
+                    // 同时更新AI叠加和原图
                     detectionOverlay.setImageBitmap(bmp);
                     imageRawVideo.setImageBitmap(bmp);
 
-                    // 更新帧信息
-                    String info = String.format("帧#%d | %.1f fps | %dKB",
-                            frame.frameNumber, currentFps, frame.jpegData.length / 1024);
+                    String info = String.format("帧#%d | %.1f fps | %dx%d | %dKB",
+                            frame.frameNumber, currentFps,
+                            bmp.getWidth(), bmp.getHeight(),
+                            frame.jpegData.length / 1024);
                     textFrameInfo.setText(info);
-                    textRawVideoInfo.setText(String.format("%dx%d", bmp.getWidth(), bmp.getHeight()));
-                } else {
-                    appendLog("JPEG解码失败: " + frame.jpegData.length + "字节");
+                    textRawVideoInfo.setText(String.format("%dx%d | %.1f fps",
+                            bmp.getWidth(), bmp.getHeight(), currentFps));
                 }
             }
         } catch (Exception e) {
@@ -296,20 +330,12 @@ public class DebugFragment extends Fragment implements MainActivity.DebugDataLis
         }
     }
 
-    /**
-     * 计算并更新帧率
-     */
     private void updateFrameRate() {
         long now = System.currentTimeMillis();
         frameCountSinceLastUpdate++;
-
-        if (lastFrameTime == 0) {
-            lastFrameTime = now;
-            return;
-        }
-
+        if (lastFrameTime == 0) { lastFrameTime = now; return; }
         long elapsed = now - lastFrameTime;
-        if (elapsed >= 1000) { // 每秒更新一次帧率
+        if (elapsed >= 1000) {
             currentFps = frameCountSinceLastUpdate * 1000f / elapsed;
             frameCountSinceLastUpdate = 0;
             lastFrameTime = now;
@@ -317,64 +343,24 @@ public class DebugFragment extends Fragment implements MainActivity.DebugDataLis
     }
 
     /**
-     * 更新原始传感器数据显示
-     */
-    private void updateRawSensorData(Protocol.SensorData data) {
-        // 激光原始数据
-        textRawLaser.setText(String.format("激光测距: %.2f m | 电池: %d%% | 模式: %s",
-                data.laser_front, data.battery, AppConfig.getModeName(data.mode)));
-
-        // 前雷达原始数据
-        if (data.radar_front != null) {
-            textRawRadarFront.setText(String.format(
-                    "前雷达: 距离=%.2fm | 速度=%.2fm/s | 角度=%.1f°",
-                    data.radar_front.dist, data.radar_front.speed, data.radar_front.angle));
-        } else {
-            textRawRadarFront.setText("前雷达: 无数据");
-        }
-
-        // 后雷达原始数据
-        if (data.radar_back != null) {
-            textRawRadarRear.setText(String.format(
-                    "后雷达: 距离=%.2fm | 速度=%.2fm/s | 角度=%.1f°",
-                    data.radar_back.dist, data.radar_back.speed, data.radar_back.angle));
-        } else {
-            textRawRadarRear.setText("后雷达: 无数据");
-        }
-
-        // 时间戳
-        textRawTimestamp.setText(String.format("帧时间戳: %s | ESP32 level=%d img=%d",
-                timeFormat.format(new Date(data.timestamp)), data.level, data.img));
-    }
-
-    /**
-     * 更新处理后数据（从传感器+视觉结果综合计算）
+     * 更新处理后数据
      */
     private void updateProcessedData(Protocol.SensorData data,
                                      TFLiteClassifier.ClassifyResult classifyResult) {
         if (data == null) return;
 
-        // 计算最近距离
-        float minDist = Float.MAX_VALUE;
-        String distSource = "无";
-        if (data.laser_front > 0) {
-            minDist = data.laser_front;
-            distSource = "激光";
-        }
-        if (data.radar_front != null && data.radar_front.dist > 0
-                && data.radar_front.dist < minDist) {
-            minDist = data.radar_front.dist;
-            distSource = "前雷达";
-        }
+        // 最近距离 (激光+超声波融合)
+        float minDist = data.getMinDistance();
+        String distSource = data.getMinDistanceSource();
 
-        // 危险等级（优先使用 ESP32 发送的 level，其次本地计算）
+        // 危险等级
         String dangerText;
         int dangerColor;
         int level = data.level;
-        if (minDist < AppConfig.DISTANCE_DANGER || level == 2) {
+        if (minDist > 0 && minDist < AppConfig.DISTANCE_DANGER || level == 2) {
             dangerText = "⚠ 危险 (DANGER)";
             dangerColor = 0xFFF44336;
-        } else if (minDist < AppConfig.DISTANCE_CAUTION || level == 1) {
+        } else if (minDist > 0 && minDist < AppConfig.DISTANCE_CAUTION || level == 1) {
             dangerText = "⚡ 注意 (CAUTION)";
             dangerColor = 0xFFFF9800;
         } else {
@@ -386,20 +372,20 @@ public class DebugFragment extends Fragment implements MainActivity.DebugDataLis
         textDangerLevel.setTextColor(dangerColor);
 
         // 最近距离
-        if (minDist < Float.MAX_VALUE) {
+        if (minDist > 0) {
             textMinDistance.setText(String.format("最近距离: %.2f m (来源: %s)", minDist, distSource));
         } else {
             textMinDistance.setText("最近距离: 无有效数据");
         }
 
-        // 防抖状态（ESP32 侧 WARN_DEBOUNCE_FRAMES=3）
+        // 防抖状态
         if (level >= 2) {
             textDebounceInfo.setText("防抖状态: DANGER已确认 (需3帧连续)");
         } else {
-            textDebounceInfo.setText("防抖状态: 正常 (未触发DANGER防抖)");
+            textDebounceInfo.setText("防抖状态: 正常");
         }
 
-        // 视觉检测数量
+        // 视觉检测
         if (classifyResult != null && classifyResult.hasDetections()) {
             List<TFLiteClassifier.DetectedObject> dets = classifyResult.detections;
             StringBuilder sb = new StringBuilder();
@@ -418,24 +404,7 @@ public class DebugFragment extends Fragment implements MainActivity.DebugDataLis
     }
 
     /**
-     * 更新避障分析结果
-     */
-    private void updateAnalysisResult(ObstacleAnalyzer.AnalysisResult result) {
-        if (result == null) return;
-
-        // 避障建议
-        if (result.adviceText != null && !result.adviceText.isEmpty()) {
-            textAdvice.setText("避障建议: " + result.adviceText);
-        }
-
-        // 从分析结果更新一些处理后的信息
-        if (result.obstacleDescription != null && !result.obstacleDescription.isEmpty()) {
-            // 障碍物描述可以补充显示
-        }
-    }
-
-    /**
-     * 更新网络统计信息
+     * 更新网络统计
      */
     private void updateNetworkStats() {
         if (activity == null) return;
@@ -445,35 +414,28 @@ public class DebugFragment extends Fragment implements MainActivity.DebugDataLis
         // TCP 状态
         if (activity.getTcpClient() != null) {
             boolean connected = activity.getTcpClient().isConnected();
-            sb.append("TCP: ").append(connected ? "🟢 已连接" : "🔴 未连接").append("\n");
+            sb.append("TCP(传感器): ").append(connected ? "🟢 已连接" : "🔴 未连接").append("\n");
         }
 
-        // UDP 统计
-        if (activity.getUdpReceiver() != null) {
-            UDPReceiver udp = activity.getUdpReceiver();
-            sb.append(String.format("UDP帧数: %d | 丢包: %d | 丢包率: %.1f%% | 帧率: %.1f fps",
-                    udp.getFrameCount(), udp.getLostPackets(),
-                    udp.getPacketLossRate() * 100, currentFps));
+        // HTTP 摄像头状态
+        if (httpCamera != null && isHttpCameraRunning) {
+            sb.append(String.format("HTTP(摄像板): 🟢 %s/video | 帧数: %d | %.1f fps",
+                    cameraIp, httpCamera.getFrameCount(), currentFps));
         } else {
-            sb.append("UDP: 未启动");
+            sb.append("HTTP(摄像板): 未启动");
         }
 
         textNetworkStats.setText(sb.toString());
     }
 
-    // ==================== 日志方法 ====================
+    // ==================== 日志 ====================
 
-    /**
-     * 追加日志信息
-     * @param log 日志内容
-     */
     public void appendLog(String log) {
         mainHandler.post(() -> {
             String timestamp = timeFormat.format(new Date());
             logBuilder.append("[").append(timestamp).append("] ")
                     .append(log).append("\n");
 
-            // 限制日志行数
             String[] lines = logBuilder.toString().split("\n");
             if (lines.length > MAX_LOG_LINES) {
                 logBuilder.setLength(0);
@@ -483,16 +445,12 @@ public class DebugFragment extends Fragment implements MainActivity.DebugDataLis
             }
 
             textLog.setText(logBuilder.toString());
-            // 滚动到底部
             scrollLog.post(() -> scrollLog.fullScroll(ScrollView.FOCUS_DOWN));
         });
     }
 
     // ==================== HTTP 摄像头直连 ====================
 
-    /**
-     * 切换 HTTP 摄像头开关
-     */
     private void toggleHttpCamera() {
         if (isHttpCameraRunning) {
             stopHttpCamera();
@@ -501,15 +459,15 @@ public class DebugFragment extends Fragment implements MainActivity.DebugDataLis
         }
     }
 
-    /**
-     * 启动 HTTP 摄像头直连
-     */
     private void startHttpCamera() {
         if (httpCamera == null) {
             httpCamera = new CameraHttpClient();
         }
-        // 设置 ESP32-S3-EYE 摄像头 MJPEG 流 URL
-        httpCamera.setStreamUrl("http://" + AppConfig.ESP32_HOST + "/video");
+
+        // 使用动态获取的摄像板IP
+        String url = "http://" + cameraIp + "/video";
+        httpCamera.setStreamUrl(url);
+
         httpCamera.setOnFrameListener(new CameraHttpClient.OnFrameListener() {
             @Override
             public void onFrame(byte[] jpegData, int frameNumber, long fetchTimeMs) {
@@ -517,12 +475,20 @@ public class DebugFragment extends Fragment implements MainActivity.DebugDataLis
                     android.graphics.Bitmap bmp = BitmapFactory.decodeByteArray(
                             jpegData, 0, jpegData.length);
                     if (bmp != null) {
+                        // 更新原图显示
                         imageRawVideo.setImageBitmap(bmp);
-                        textRawVideoInfo.setText(String.format("%dx%d | HTTP直连 %dKB | %dms",
+                        textRawVideoInfo.setText(String.format(
+                                "%dx%d | HTTP直连 | %dKB | #%d",
                                 bmp.getWidth(), bmp.getHeight(),
-                                jpegData.length / 1024, fetchTimeMs));
+                                jpegData.length / 1024, frameNumber));
+
+                        // 同时更新AI检测叠加框的背景图
+                        detectionOverlay.setImageBitmap(bmp);
                     }
                 });
+
+                // 更新帧率
+                mainHandler.post(DebugFragment.this::updateFrameRate);
             }
 
             @Override
@@ -532,18 +498,18 @@ public class DebugFragment extends Fragment implements MainActivity.DebugDataLis
 
             @Override
             public void onStateChanged(boolean connected, String message) {
-                // 状态变化记录日志
+                if (!connected) {
+                    appendLog("HTTP摄像头断开: " + message);
+                }
             }
         });
+
         httpCamera.start();
         isHttpCameraRunning = true;
         updateHttpButtonState();
-        appendLog("HTTP摄像头直连已开启 → http://" + AppConfig.ESP32_HOST + "/video");
+        appendLog("HTTP摄像头直连已开启 → " + url);
     }
 
-    /**
-     * 停止 HTTP 摄像头直连
-     */
     private void stopHttpCamera() {
         if (httpCamera != null) {
             httpCamera.stop();
@@ -552,9 +518,6 @@ public class DebugFragment extends Fragment implements MainActivity.DebugDataLis
         updateHttpButtonState();
     }
 
-    /**
-     * 更新 HTTP 按钮文字和颜色
-     */
     private void updateHttpButtonState() {
         if (btnHttpCamera != null) {
             btnHttpCamera.setText(isHttpCameraRunning ? "关闭HTTP" : "HTTP直连");

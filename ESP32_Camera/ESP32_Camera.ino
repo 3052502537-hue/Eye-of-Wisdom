@@ -1,13 +1,35 @@
 /* ============================================================
  *  文件名: ESP32_Camera.ino
  *  功能描述:
- *    导盲头环项目 - 摄像头板(ESP32-S3-WROOM) 主程序 v1.1
- *    v1.1: 修复 TransferFrame_t 栈溢出 — 改用 camera_fb_t* 指针队列
+ *    导盲头环项目 - 摄像头板(ESP32-S3-WROOM) 主程序 v2.0
+ *    v2.0: 彻底移除 SPI 从机通信
+ *          改为 WiFi STA 连接主控 AP，HTTP MJPEG 直传手机
+ *          摄像板与主控板无硬件连接，完全独立
  *
  *  主流程:
- *    初始化OV2640 → SPI从机 → 创建任务
- *    Camera任务: 采集 → 队列传fb指针
- *    SPI任务:    取fb → SPI发送 → 归还fb
+ *    上电 → 初始化OV2640 → 连接主控WiFi(STA) → 启动HTTP服务器
+ *    Camera任务: 采集JPEG → 更新帧缓存
+ *    HTTP任务:   接受客户端 → 推送MJPEG流 / 响应单帧请求
+ *    WiFi任务:   监控连接状态 → 断线自动重连
+ *
+ *  通信架构 (v2.0):
+ *    ┌──────────────────┐                    ┌──────────────┐
+ *    │  ESP32_Camera     │  WiFi STA          │  ESP32_Main   │
+ *    │  192.168.4.10     │ ◄────────────────► │  WiFi AP      │
+ *    │  HTTP :80         │                    │  192.168.4.1  │
+ *    └────────┬─────────┘                    └──────────────┘
+ *             │
+ *             │ HTTP MJPEG (/video) + 单帧 (/capture)
+ *             ▼
+ *    ┌──────────────┐
+ *    │  手机 App     │
+ *    │  CameraHttp   │
+ *    │  Client       │
+ *    └──────────────┘
+ *
+ *  硬件: ESP32-S3-WROOM + OV2640
+ *  编译: Arduino IDE, 选择 "ESP32S3 Dev Module",
+ *        PSRAM=OPI 8MB, Flash=16MB
  * ============================================================ */
 
 #include <Arduino.h>
@@ -18,33 +40,77 @@
 
 #include "config.h"
 #include "camera_driver.h"
-#include "spi_slave_comm.h"
+#include "camera_web_server.h"
 
 /* 全局对象 */
-CameraDriver   g_camera;
-SpiSlaveComm   g_spiSlave;
+CameraDriver     g_camera;
+CameraWebServer  g_httpServer;
 
-static bool          g_systemReady = false;
+static bool      g_systemReady   = false;
+static bool      g_wifiConnected = false;
 
 /* FreeRTOS 任务句柄 */
-static TaskHandle_t  g_taskCamCapture = NULL;
-static TaskHandle_t  g_taskSpiSend    = NULL;
-static TaskHandle_t  g_taskComm       = NULL;
-static TaskHandle_t  g_taskHeartbeat  = NULL;
+static TaskHandle_t  g_taskCamCapture  = NULL;
+static TaskHandle_t  g_taskHttpServer  = NULL;
+static TaskHandle_t  g_taskWifiMonitor = NULL;
 
-/* 帧指针队列 (传递 camera_fb_t*, 不拷贝数据, 避免栈溢出) */
+/* 帧指针队列 (camera_fb_t*, 采集→HTTP) */
 static QueueHandle_t g_frameQueue = NULL;
 
+/* ============================================================
+ *  WiFi STA 连接函数
+ *    连接主控ESP32的AP热点，设置静态IP
+ *    失败时自动重试
+ * ============================================================ */
+static bool connectToAP()
+{
+    if (g_wifiConnected) return true;
+
+    DBG_PRINTF("[WiFi] Connecting to AP: %s\n", WIFI_STA_SSID);
+
+    WiFi.mode(WIFI_STA);
+
+    /* 配置静态IP (手机App通过此IP访问摄像板) */
+    IPAddress localIp, gateway, subnet;
+    if (!localIp.fromString(WIFI_STA_STATIC_IP) ||
+        !gateway.fromString(WIFI_STA_GATEWAY) ||
+        !subnet.fromString(WIFI_STA_SUBNET)) {
+        DBG_PRINTLN("[WiFi] Invalid IP config");
+        return false;
+    }
+    WiFi.config(localIp, gateway, subnet);
+
+    /* 开始连接 */
+    WiFi.begin(WIFI_STA_SSID, WIFI_STA_PASSWORD);
+
+    /* 等待连接(最多10秒) */
+    int retries = 0;
+    while (WiFi.status() != WL_CONNECTED && retries < 20) {
+        delay(500);
+        DBG_PRINT(".");
+        retries++;
+    }
+    DBG_PRINTLN();
+
+    if (WiFi.status() == WL_CONNECTED) {
+        g_wifiConnected = true;
+        DBG_PRINTF("[WiFi] Connected! IP: %s\n", WiFi.localIP().toString().c_str());
+        DBG_PRINTF("[WiFi] Signal strength: %d dBm\n", WiFi.RSSI());
+        return true;
+    } else {
+        DBG_PRINTF("[WiFi] Connection FAIL (status=%d)\n", WiFi.status());
+        return false;
+    }
+}
 
 /* ============================================================
  *  摄像头采集任务
  *    采集 JPEG → 入队 fb 指针 → 循环
+ *    HTTP服务器从队列取帧推送给客户端
  * ============================================================ */
 static void taskCameraCapture(void* arg)
 {
-    DBG_PRINTLN("[Task] 摄像头采集任务启动");
-
-    uint32_t lastCaptureTime = 0;
+    DBG_PRINTLN("[Task] Camera capture task started");
 
     while (1) {
         uint32_t startTime = millis();
@@ -52,154 +118,92 @@ static void taskCameraCapture(void* arg)
         /* 采集一帧 */
         camera_fb_t* fb = NULL;
         if (!g_camera.capture(&fb)) {
-            DBG_PRINTLN("[Task] 采集失败，等待重试...");
+            DBG_PRINTLN("[Task] Capture failed, retry...");
             vTaskDelay(pdMS_TO_TICKS(100));
             continue;
         }
 
-        /* 将 fb 指针放入队列 (非阻塞, 队列满则丢弃旧帧) */
-        if (xQueueSend(g_frameQueue, &fb, 0) != pdTRUE) {
-            /* 队列满 → SPI发送太慢, 丢弃当前帧 */
-            g_camera.returnFrame(fb);
-            DBG_PRINTLN("[Task] 发送队列满，丢弃帧");
-        }
+        /* 更新HTTP服务器的帧缓存(供/capture和/video使用) */
+        g_httpServer.updateFrame(fb->buf, fb->len, fb->width, fb->height);
+
+        /* 归还帧缓冲 */
+        g_camera.returnFrame(fb);
 
         /* 帧率控制 */
         uint32_t elapsed = millis() - startTime;
-        uint32_t waitTime = 0;
-        if (elapsed < CAMERA_FRAME_INTERVAL_MS) {
-            waitTime = CAMERA_FRAME_INTERVAL_MS - elapsed;
-        }
-        vTaskDelay(pdMS_TO_TICKS(waitTime));
+        int32_t wait = CAMERA_FRAME_INTERVAL_MS - (int32_t)elapsed;
+        if (wait < 0) wait = 0;
+        vTaskDelay(pdMS_TO_TICKS(wait));
 
 #ifdef DEBUG
-        uint32_t frameInterval = millis() - lastCaptureTime;
-        lastCaptureTime = millis();
-        DBG_PRINTF("[Task] 采集 #%lu, 耗时%ums, 间隔%ums\n",
-                   (unsigned long)g_camera.getFrameCount(),
-                   (unsigned)elapsed, (unsigned)frameInterval);
+        static uint32_t lastDbg = 0;
+        if (millis() - lastDbg >= 5000) {
+            lastDbg = millis();
+            DBG_PRINTF("[Task] Frames captured: %lu, HTTP clients: %d\n",
+                       (unsigned long)g_camera.getFrameCount(),
+                       g_httpServer.getClientCount());
+        }
 #endif
     }
 }
 
-
 /* ============================================================
- *  SPI 发送任务
- *    从队列取 fb 指针 → SPI 发送 → 归还 fb
+ *  HTTP 服务任务
+ *    周期处理HTTP请求: 接受新客户端、推送MJPEG帧、响应单帧请求
+ *    与 CameraWebServer 协作
  * ============================================================ */
-static void taskSpiSend(void* arg)
+static void taskHttpServer(void* arg)
 {
-    DBG_PRINTLN("[Task] SPI 发送任务启动");
+    DBG_PRINTLN("[Task] HTTP server task started");
 
     while (1) {
-        camera_fb_t* fb = NULL;
-        if (xQueueReceive(g_frameQueue, &fb, portMAX_DELAY) == pdTRUE) {
-            if (!fb || fb->len == 0) {
-                if (fb) g_camera.returnFrame(fb);
-                continue;
-            }
+        if (g_systemReady && g_httpServer.isRunning()) {
+            /* 处理所有未决的HTTP请求和MJPEG帧推送 */
+            g_httpServer.handleClients();
+        }
 
-            /* 关键: 先从PSRAM拷到堆内存, 归还fb, 再SPI发送
-             * 避免SPI DMA活跃期间访问PSRAM导致Cache/MMU错误 */
-            size_t imgSize = fb->len;
-            uint16_t imgW = fb->width, imgH = fb->height;
-            uint8_t* imgCopy = (uint8_t*)malloc(imgSize);
-            if (!imgCopy) {
-                DBG_PRINTLN("[Task] malloc失败, 丢弃帧");
-                g_camera.returnFrame(fb);
-                continue;
-            }
-            memcpy(imgCopy, fb->buf, imgSize);
-            g_camera.returnFrame(fb);  // 立即归还, 摄像头可继续采集
+        /* 高速轮询 (5ms) 确保MJPEG流低延迟 */
+        vTaskDelay(pdMS_TO_TICKS(5));
+    }
+}
 
+/* ============================================================
+ *  WiFi 连接监控任务
+ *    监控WiFi连接状态，断线自动重连
+ *    定期打印状态信息
+ * ============================================================ */
+static void taskWifiMonitor(void* arg)
+{
+    DBG_PRINTLN("[Task] WiFi monitor task started");
+
+    while (1) {
+        if (WiFi.status() != WL_CONNECTED) {
+            if (g_wifiConnected) {
+                DBG_PRINTLN("[Task] WiFi disconnected! Reconnecting...");
+                g_wifiConnected = false;
+            }
+            connectToAP();
+        }
+
+        /* 每30秒输出一次状态 */
 #ifdef DEBUG
-            DBG_PRINTF("[Task] 开始发送帧: %ux%u, %u字节\n", imgW, imgH, (unsigned)imgSize);
-            uint32_t sendStart = millis();
+        static uint32_t lastStatus = 0;
+        if (millis() - lastStatus >= 30000) {
+            lastStatus = millis();
+            DBG_PRINTF("[Status] WiFi: %s | IP: %s | RSSI: %d | HTTP clients: %d | "
+                       "Frames: cam=%lu sent=%lu\n",
+                       g_wifiConnected ? "OK" : "DOWN",
+                       WiFi.localIP().toString().c_str(),
+                       WiFi.RSSI(),
+                       g_httpServer.getClientCount(),
+                       (unsigned long)g_camera.getFrameCount(),
+                       (unsigned long)g_httpServer.getFrameCount());
+        }
 #endif
 
-            bool ok = g_spiSlave.sendFrame(imgCopy, imgSize, imgW, imgH, IMG_FMT_JPEG);
-            free(imgCopy);
-
-            if (!ok) {
-                DBG_PRINTLN("[Task] SPI 发送失败");
-            }
-
-#ifdef DEBUG
-            uint32_t sendTime = millis() - sendStart;
-            DBG_PRINTF("[Task] 发送完成, 耗时%ums, %s\n",
-                       (unsigned)sendTime, ok ? "成功" : "失败");
-#endif
-        }
+        vTaskDelay(pdMS_TO_TICKS(2000));
     }
 }
-
-
-/* ============================================================
- *  指令处理任务
- *    接收并处理主控板下发的 SPI 指令
- * ============================================================ */
-static void taskCommHandler(void* arg)
-{
-    DBG_PRINTLN("[Task] 指令处理任务启动");
-
-    RxFrame_t rxFrame;
-
-    while (1) {
-        if (xQueueReceive(g_spiSlave.getRxQueue(), &rxFrame,
-                          pdMS_TO_TICKS(100)) == pdTRUE) {
-            DBG_PRINTF("[Task] 收到指令: cmd=0x%02X, len=%u\n",
-                       rxFrame.cmd, rxFrame.dataLen);
-
-            switch (rxFrame.cmd) {
-                case SPI_CMD_SET_RESOLUTION:
-                    if (rxFrame.dataLen >= 1) {
-                        uint8_t resId = rxFrame.data[0];
-                        DBG_PRINTF("[Task] 设置分辨率: %u\n", resId);
-                        switch (resId) {
-                            case 0: g_camera.setFrameSize(FRAMESIZE_QVGA); break;
-                            case 1: g_camera.setFrameSize(FRAMESIZE_VGA);  break;
-                            default: DBG_PRINTLN("[Task] 未知分辨率ID");   break;
-                        }
-                    }
-                    break;
-
-                case SPI_CMD_SET_FPS:
-                    if (rxFrame.dataLen >= 1) {
-                        DBG_PRINTF("[Task] 设置帧率: %u (当前为配置固定值)\n", rxFrame.data[0]);
-                    }
-                    break;
-
-                case SPI_CMD_SET_QUALITY:
-                    if (rxFrame.dataLen >= 1) {
-                        uint8_t quality = rxFrame.data[0];
-                        DBG_PRINTF("[Task] 设置JPEG质量: %u\n", quality);
-                        g_camera.setQuality(quality);
-                    }
-                    break;
-
-                default:
-                    DBG_PRINTF("[Task] 未知指令: 0x%02X\n", rxFrame.cmd);
-                    break;
-            }
-        }
-    }
-}
-
-
-/* ============================================================
- *  心跳任务
- * ============================================================ */
-static void taskHeartbeat(void* arg)
-{
-    DBG_PRINTLN("[Task] 心跳任务启动");
-
-    while (1) {
-        uint32_t timestamp = millis();
-        g_spiSlave.sendHeartbeat(timestamp);
-        vTaskDelay(pdMS_TO_TICKS(HEARTBEAT_PERIOD_MS));
-    }
-}
-
 
 /* ============================================================
  *  Arduino setup()
@@ -210,36 +214,44 @@ void setup()
     delay(1000);
 
     DBG_PRINTLN("============================================");
-    DBG_PRINTLN("  导盲头环 - 摄像头板启动 v1.1");
+    DBG_PRINTLN("  导盲头环 - 摄像头板启动 v2.0");
     DBG_PRINTLN("  开发板: ESP32-S3-WROOM");
     DBG_PRINTLN("  摄像头: OV2640 VGA JPEG");
+    DBG_PRINTLN("  通信:   WiFi STA + HTTP MJPEG 直传手机");
     DBG_PRINTLN("============================================");
 
-    /* 创建帧指针队列 (仅存指针, 4字节/槽, 极小内存) */
-    g_frameQueue = xQueueCreate(FRAME_QUEUE_LENGTH, sizeof(camera_fb_t*));
-    if (!g_frameQueue) {
-        DBG_PRINTLN("[Main] 帧队列创建失败!");
-    }
-
-    /* 初始化摄像头 */
-    DBG_PRINTLN("[Main] 初始化 OV2640 摄像头...");
+    /* ---- 1. 初始化 OV2640 摄像头 ---- */
+    DBG_PRINTLN("[Main] Initializing OV2640...");
     if (g_camera.init()) {
-        DBG_PRINTF("[Main] 摄像头初始化成功: %dx%d\n",
-                   g_camera.getWidth(), g_camera.getHeight());
+        DBG_PRINTF("[Main] Camera init OK: %dx%d JPEG quality=%d\n",
+                   g_camera.getWidth(), g_camera.getHeight(), CAMERA_JPEG_QUALITY);
     } else {
-        DBG_PRINTLN("[Main] 摄像头初始化失败! 请检查接线");
+        DBG_PRINTLN("[Main] Camera init FAIL! Check wiring.");
+        /* 即使摄像头失败也继续 — WiFi+HTTP仍可用 */
     }
 
-    /* 初始化 SPI 从机 */
-    DBG_PRINTLN("[Main] 初始化 SPI 从机通信...");
-    if (g_spiSlave.init()) {
-        DBG_PRINTLN("[Main] SPI 从机初始化成功");
-    } else {
-        DBG_PRINTLN("[Main] SPI 从机初始化失败!");
+    /* ---- 2. 连接主控AP (WiFi STA模式) ---- */
+    DBG_PRINTLN("[Main] Connecting to main AP...");
+    if (!connectToAP()) {
+        DBG_PRINTLN("[Main] WiFi initial connect FAIL (will retry in monitor task)");
     }
 
-    /* 创建 FreeRTOS 任务 */
-    DBG_PRINTLN("[Main] 创建 FreeRTOS 任务...");
+    /* ---- 3. 启动 HTTP 服务器 (MJPEG + capture) ---- */
+    DBG_PRINTLN("[Main] Starting HTTP server...");
+    if (g_httpServer.begin(HTTP_SERVER_PORT)) {
+        DBG_PRINTF("[Main] HTTP server on port %d\n", HTTP_SERVER_PORT);
+        DBG_PRINTF("[Main]   MJPEG stream: http://%s%s\n",
+                   WIFI_STA_STATIC_IP, MJPEG_STREAM_PATH);
+        DBG_PRINTF("[Main]   Capture:      http://%s%s\n",
+                   WIFI_STA_STATIC_IP, CAPTURE_PATH);
+        DBG_PRINTF("[Main]   Status:       http://%s%s\n",
+                   WIFI_STA_STATIC_IP, STATUS_PATH);
+    } else {
+        DBG_PRINTLN("[Main] HTTP server FAIL!");
+    }
+
+    /* ---- 4. 创建 FreeRTOS 任务 ---- */
+    DBG_PRINTLN("[Main] Creating FreeRTOS tasks...");
 
     xTaskCreatePinnedToCore(
         taskCameraCapture, "CamCapture",
@@ -248,31 +260,25 @@ void setup()
         TASK_CORE_CAM_CAPTURE);
 
     xTaskCreatePinnedToCore(
-        taskSpiSend, "SpiSend",
-        TASK_STACK_SPI_SEND, NULL,
-        TASK_PRIORITY_SPI_SEND, &g_taskSpiSend,
-        TASK_CORE_SPI_SEND);
+        taskHttpServer, "HttpServer",
+        TASK_STACK_HTTP_SERVER, NULL,
+        TASK_PRIORITY_HTTP_SERVER, &g_taskHttpServer,
+        TASK_CORE_HTTP_SERVER);
 
     xTaskCreatePinnedToCore(
-        taskCommHandler, "CommHandler",
-        TASK_STACK_COMM, NULL,
-        TASK_PRIORITY_COMM, &g_taskComm,
-        TASK_CORE_COMM);
-
-    xTaskCreatePinnedToCore(
-        taskHeartbeat, "Heartbeat",
-        TASK_STACK_HEARTBEAT, NULL,
-        TASK_PRIORITY_HEARTBEAT, &g_taskHeartbeat,
-        TASK_CORE_HEARTBEAT);
+        taskWifiMonitor, "WifiMonitor",
+        TASK_STACK_WIFI_MONITOR, NULL,
+        TASK_PRIORITY_WIFI_MONITOR, &g_taskWifiMonitor,
+        TASK_CORE_WIFI_MONITOR);
 
     g_systemReady = true;
-    DBG_PRINTLN("[Main] 摄像头板初始化完成，开始运行!");
+    DBG_PRINTLN("[Main] Camera board ready!");
     DBG_PRINTLN("============================================");
 }
 
-
 /* ============================================================
  *  Arduino loop()
+ *    FreeRTOS 任务处理核心逻辑，loop 空闲
  * ============================================================ */
 void loop()
 {
@@ -281,17 +287,6 @@ void loop()
         return;
     }
 
-#ifdef DEBUG
-    static uint32_t lastStatusTime = 0;
-    uint32_t now = millis();
-    if (now - lastStatusTime >= 5000) {
-        lastStatusTime = now;
-        DBG_PRINTF("[Status] 运行时间: %lus | 采集: %lu | 发送: %lu\n",
-                   (unsigned long)(now / 1000),
-                   (unsigned long)g_camera.getFrameCount(),
-                   (unsigned long)g_spiSlave.getTxFrameCount());
-    }
-#endif
-
+    /* 空闲等待 — 所有工作由 FreeRTOS 任务完成 */
     vTaskDelay(pdMS_TO_TICKS(1000));
 }

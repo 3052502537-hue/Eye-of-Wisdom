@@ -1,8 +1,9 @@
 /* ============================================================
  *  文件名: config.h
  *  功能描述:
- *    导盲头环项目 - 摄像头板(ESP32-S3-WROOM) 全局配置文件
- *    包含 OV2640 DVP 引脚分配、SPI 从机引脚、数据就绪引脚、
+ *    导盲头环项目 - 摄像头板(ESP32-S3-WROOM) 全局配置文件 v2.0
+ *    v2.0: 删除 SPI 从机引脚和协议，改为 WiFi STA + HTTP MJPEG 直传手机
+ *    包含 OV2640 DVP 引脚分配、WiFi STA 配置、HTTP 服务器配置、
  *    图像参数、FreeRTOS 任务配置等所有可调参数。
  *    修改硬件接线后只需修改本文件即可。
  *
@@ -13,16 +14,23 @@
  *  接口说明:
  *    提供宏定义形式的引脚号和参数，供各模块直接引用
  *
- *  引脚分配原则:
- *    1. 摄像头 DVP 引脚 (16个) 与 SPI 引脚完全分开，无复用
- *    2. 摄像头数据总线 D0-D7 尽量使用连续 GPIO
- *    3. SPI 从机引脚使用高编号 GPIO，避免与摄像头冲突
- *    4. 数据就绪引脚独立，用于通知主控板
+ *  系统架构 (v2.0):
+ *    ┌──────────────────┐   WiFi STA         ┌──────────────┐
+ *    │  ESP32_Camera     │ ◄────────────────► │  ESP32_Main   │
+ *    │  OV2640 + HTTP    │   连接主控AP        │  WiFi AP      │
+ *    └────────┬─────────┘                    └──────────────┘
+ *             │ HTTP :80                                  │
+ *             │ /video (MJPEG流)                          │
+ *             │ /capture (单帧)                           │
+ *             │ /status  (状态)                           │
+ *    ┌────────┴─────────┐                                │
+ *    │  手机 App         │ ◄──────────────────────────────┘
+ *    │  CameraHttpClient │   TCP:8888 JSON
+ *    └──────────────────┘
  *
  *  硬件说明:
  *    - 摄像头板: ESP32-S3-WROOM (带 PSRAM)
  *    - 摄像头:   OV2640, 200万像素, DVP 接口
- *    - 主控板:   ESP32-S3-N16R8 (SPI 主机)
  *    - 电源:     18650 锂电池, 5V/3.3V 双路
  * ============================================================ */
 
@@ -34,7 +42,6 @@
 /* ============================================================
  *  一、调试配置
  *    通过 #define DEBUG 开启调试输出
- *    在 Arduino IDE 中也可通过 Tools > Debug Level 设置
  * ============================================================ */
 
 #define DEBUG                  /* 调试总开关，取消注释则开启调试输出 */
@@ -42,21 +49,21 @@
 #define DEBUG_SERIAL_BAUDRATE    115200   /* 调试串口波特率 */
 
 #ifdef DEBUG
-  #define DBG_PRINT(x)           Serial.print(x)       /* 调试打印字符串 */
-  #define DBG_PRINTLN(x)         Serial.println(x)     /* 调试打印并换行 */
-  #define DBG_PRINTF(fmt, ...)   Serial.printf(fmt, ##__VA_ARGS__)  /* 格式化调试打印 */
+  #define DBG_PRINT(x)           Serial.print(x)
+  #define DBG_PRINTLN(x)         Serial.println(x)
+  #define DBG_PRINTF(fmt, ...)   Serial.printf(fmt, ##__VA_ARGS__)
 #else
-  #define DBG_PRINT(x)                                /* 调试关闭时为空操作 */
+  #define DBG_PRINT(x)
   #define DBG_PRINTLN(x)
   #define DBG_PRINTF(fmt, ...)
 #endif
 
 /* ============================================================
  *  二、OV2640 摄像头引脚配置 (DVP接口, 共16个引脚)
- *    所有引脚与 SPI 引脚完全独立，无复用
+ *    所有引脚独立使用，无SPI冲突
  *
  *  注意: GPIO0/GPIO3/GPIO45/GPIO46 为 ESP32-S3 启动配置引脚，
- *        摄像头引脚已避开这些引脚。实际接线请根据开发板原理图核对。
+ *        摄像头引脚已避开这些引脚。
  * ============================================================ */
 
 #define PIN_CAMERA_PWDN    -1         /* 掉电控制 (高电平掉电)，-1 表示未连接 */
@@ -77,138 +84,87 @@
 #define PIN_CAMERA_D0      11         /* 数据位0 (LSB) */
 
 /* ============================================================
- *  三、SPI 从机通信引脚配置
- *    摄像头板为 SPI 从机，主控板为主机
- *    使用 SPI2_HOST (FSPI)，引脚通过 GPIO 矩阵可映射到任意引脚
- *
- *  接线说明:
- *    摄像头板 MOSI  ←→  主控板 MOSI  (主控输出，摄像头输入)
- *    摄像头板 MISO  ←→  主控板 MISO  (摄像头输出，主控输入)
- *    摄像头板 SCLK  ←→  主控板 SCLK  (主控输出时钟)
- *    摄像头板 CS    ←→  主控板 CS    (主控控制片选，低电平有效)
- *    摄像头板 DATA_READY → 主控板 GPIO (摄像头输出就绪信号)
+ *  三、WiFi STA 配置 (v2.0: 摄像板连接主控AP)
+ *    摄像板作为 WiFi 客户端连接到主控ESP32的AP热点
+ *    手机App通过摄像板的IP地址拉取HTTP视频流
  * ============================================================ */
 
-#define PIN_SPI_MOSI        41         /* SPI 主机输出 → 从机输入 */
-#define PIN_SPI_MISO        42         /* SPI 从机输出 → 主机输入 */
-#define PIN_SPI_SCLK        40         /* SPI 时钟 (主机输出) */
-#define PIN_SPI_CS          39         /* SPI 片选 (低电平有效，主机控制) */
-
-#define SPI_HOST_DEVICE     SPI3_HOST  /* 使用的 SPI 主机号 (HSPI=SPI3, 避开PSRAM可能占用的SPI2) */
-#define SPI_MODE            0          /* SPI 模式 (Mode0: CPOL=0, CPHA=0) */
-#define SPI_MAX_TRANSFER    4096       /* SPI 单次最大传输字节数 (受 DMA 限制) */
+#define WIFI_STA_SSID            "BlindGuide_AP"    /* 主控AP热点名称 */
+#define WIFI_STA_PASSWORD        "12345678"         /* 主控AP密码 */
+#define WIFI_STA_STATIC_IP       "192.168.4.10"     /* 摄像板静态IP */
+#define WIFI_STA_GATEWAY         "192.168.4.1"      /* 网关(主控AP IP) */
+#define WIFI_STA_SUBNET          "255.255.255.0"    /* 子网掩码 */
+#define WIFI_STA_RETRY_INTERVAL  5000               /* WiFi重连间隔(ms) */
+#define WIFI_STA_MAX_RETRIES     10                 /* 最大重试次数 */
 
 /* ============================================================
- *  四、数据就绪引脚
- *    摄像头板采集完一帧后，拉高此引脚通知主控板来读取
- *    主控板读取完成后，摄像头板拉低此引脚
- *
- *  信号时序:
- *    1. 摄像头采集一帧 → DATA_READY 拉低 (低电平有效)
- *    2. 主控检测到 DATA_READY 下降沿 → 发起 SPI 读取
- *    3. SPI 传输完成 → DATA_READY 拉高 (恢复空闲)
- *    4. 等待下一帧采集完成，重复
+ *  四、HTTP 服务器配置 (v2.0: MJPEG视频流)
+ *    摄像板运行HTTP服务器，手机App拉取视频流
  * ============================================================ */
 
-#define PIN_DATA_READY      38         /* 数据就绪通知引脚 (输出) */
-#define DATA_READY_ACTIVE   LOW        /* 就绪信号有效电平 (低电平, 与主控FALLING一致) */
-#define DATA_READY_IDLE     HIGH       /* 就绪信号空闲电平 (高电平) */
+#define HTTP_SERVER_PORT         80                 /* HTTP服务端口 */
+#define MJPEG_STREAM_PATH        "/video"           /* MJPEG视频流端点 */
+#define CAPTURE_PATH             "/capture"         /* 单帧捕获端点 */
+#define STATUS_PATH              "/status"          /* 状态查询端点 */
+#define MJPEG_BOUNDARY           "frame"            /* MJPEG boundary分隔符 */
+#define MJPEG_MAX_CLIENTS        3                  /* 最大MJPEG客户端数 */
 
 /* ============================================================
  *  五、图像参数配置
  *    VGA 分辨率 640x480，JPEG 压缩输出
+ *    QVGA 320x240 用于调试/低带宽场景
  * ============================================================ */
 
-#define CAMERA_FRAME_WIDTH    320      /* 图像宽度 (QVGA, 调试阶段) */
-#define CAMERA_FRAME_HEIGHT   240      /* 图像高度 (QVGA) */
+#define CAMERA_FRAME_WIDTH    640      /* 图像宽度 (VGA) */
+#define CAMERA_FRAME_HEIGHT   480      /* 图像高度 (VGA) */
 #define CAMERA_PIXEL_FORMAT   PIXFORMAT_JPEG  /* 像素格式: JPEG 压缩 */
-#define CAMERA_FRAME_SIZE     FRAMESIZE_QVGA  /* 帧尺寸枚举: QVGA */
-#define CAMERA_JPEG_QUALITY   10       /* JPEG 质量 (数值越小质量越高，5-63) */
+#define CAMERA_FRAME_SIZE     FRAMESIZE_VGA   /* 帧尺寸枚举: VGA */
+#define CAMERA_JPEG_QUALITY   8        /* JPEG 质量 (0-63, 越小质量越高) */
 #define CAMERA_XCLK_FREQ      20000000 /* 摄像头主时钟频率 20MHz */
 #define CAMERA_FB_COUNT       2        /* 帧缓冲区数量 (双缓冲) */
 #define CAMERA_FB_LOCATION    CAMERA_FB_IN_PSRAM  /* 帧缓冲存放位置: PSRAM */
 
-#define CAMERA_FPS_TARGET     8        /* 目标帧率 8fps */
+#define CAMERA_FPS_TARGET     10       /* 目标帧率 10fps */
 #define CAMERA_FRAME_INTERVAL_MS  (1000 / CAMERA_FPS_TARGET)  /* 帧间隔(ms) */
 
-/* JPEG 图像最大尺寸预估 (QVGA JPEG 通常 3-15KB) */
-#define JPEG_MAX_SIZE         (30 * 1024)  /* JPEG 最大 30KB */
+/* JPEG 图像最大尺寸预估 (VGA JPEG 通常 15-50KB) */
+#define JPEG_MAX_SIZE         (80 * 1024)   /* JPEG 最大 80KB */
 
 /* ============================================================
- *  六、SPI 通信协议常量(与主控板 protocol.h 一致)
- *    帧格式: |AA 55|cmd(1B)|len(2B LE)|data(NB)|CRC8(1B)|55 AA|
- * ============================================================ */
-
-#define SPI_FRAME_HEADER      0xAA55   /* 帧头 (2字节) */
-#define SPI_FRAME_TAIL        0x55AA   /* 帧尾 (2字节) */
-#define SPI_FRAME_HEADER_LEN  2        /* 帧头长度 */
-#define SPI_FRAME_TAIL_LEN    2        /* 帧尾长度 */
-#define SPI_FRAME_CMD_LEN     1        /* 命令字段长度 */
-#define SPI_FRAME_LEN_LEN     2        /* 数据长度字段 (2字节小端, 与主控一致) */
-#define SPI_FRAME_CRC_LEN     1        /* CRC 校验长度 */
-/* 帧开销 = 帧头 + 命令 + 长度 + CRC + 帧尾 = 8字节 */
-#define SPI_FRAME_OVERHEAD    (SPI_FRAME_HEADER_LEN + SPI_FRAME_CMD_LEN + \
-                               SPI_FRAME_LEN_LEN + SPI_FRAME_CRC_LEN + SPI_FRAME_TAIL_LEN)
-
-/* SPI 命令码定义(与主控板 protocol.h SpiCommand_t 一致) */
-#define SPI_CMD_IMG_FRAME_START   0x01   /* 图像帧起始(元数据) */
-#define SPI_CMD_IMG_FRAME_DATA    0x02   /* 图像帧数据块 */
-#define SPI_CMD_IMG_FRAME_END     0x03   /* 图像帧结束 */
-#define SPI_CMD_SET_RESOLUTION    0x10   /* 设置分辨率 (主控下发) */
-#define SPI_CMD_SET_FPS           0x11   /* 设置帧率 (主控下发) */
-#define SPI_CMD_SET_QUALITY       0x12   /* 设置JPEG质量 (主控下发) */
-#define SPI_CMD_ACK               0x20   /* 应答 */
-#define SPI_CMD_NACK              0x21   /* 否定应答 */
-#define SPI_CMD_HEARTBEAT         0x30   /* 心跳信号 */
-
-/* 图像格式标识 */
-#define IMG_FMT_JPEG          2        /* JPEG 格式 */
-#define IMG_FMT_RGB565        0        /* RGB565 格式 */
-#define IMG_FMT_GRAYSCALE     1        /* 灰度格式 */
-
-/* ============================================================
- *  七、FreeRTOS 任务配置
- *    摄像头板运行多个 FreeRTOS 任务
+ *  六、FreeRTOS 任务配置
+ *    摄像板运行 FreeRTOS 任务
  *    数值越大优先级越高
  * ============================================================ */
 
 /* 任务优先级 */
 #define TASK_PRIORITY_CAM_CAPTURE   7    /* 图像采集 - 最高优先级 */
-#define TASK_PRIORITY_SPI_SEND      6    /* SPI 发送 */
-#define TASK_PRIORITY_IMG_PROC      5    /* 图像处理 */
-#define TASK_PRIORITY_COMM          4    /* 指令处理 */
-#define TASK_PRIORITY_HEARTBEAT     2    /* 心跳保活 */
+#define TASK_PRIORITY_HTTP_SERVER   5    /* HTTP服务器 */
+#define TASK_PRIORITY_WIFI_MONITOR  4    /* WiFi连接监控 */
 
 /* 任务栈大小 (单位: 字节) */
 #define TASK_STACK_CAM_CAPTURE      8192  /* 摄像头采集需要较大栈 */
-#define TASK_STACK_SPI_SEND         10240 /* SPI 发送任务栈 (v1.1: 增大, 避免栈溢出) */
-#define TASK_STACK_IMG_PROC         4096  /* 图像处理任务栈 */
-#define TASK_STACK_COMM             3072  /* 指令处理任务栈 */
-#define TASK_STACK_HEARTBEAT        2048  /* 心跳任务栈 */
+#define TASK_STACK_HTTP_SERVER      8192  /* HTTP服务器任务栈 */
+#define TASK_STACK_WIFI_MONITOR     4096  /* WiFi监控任务栈 */
 
 /* 任务运行核心分配 (ESP32-S3 双核: 0=PRO_CPU, 1=APP_CPU) */
 #define TASK_CORE_CAM_CAPTURE       1    /* 摄像头采集在 APP_CPU */
-#define TASK_CORE_SPI_SEND          0    /* SPI 发送在 PRO_CPU */
-#define TASK_CORE_IMG_PROC          1    /* 图像处理在 APP_CPU */
-#define TASK_CORE_COMM              0    /* 指令处理在 PRO_CPU */
-#define TASK_CORE_HEARTBEAT         0    /* 心跳在 PRO_CPU */
+#define TASK_CORE_HTTP_SERVER       0    /* HTTP服务器在 PRO_CPU */
+#define TASK_CORE_WIFI_MONITOR      0    /* WiFi监控在 PRO_CPU */
 
 /* ============================================================
- *  八、其他系统配置
+ *  七、其他系统配置
  * ============================================================ */
 
-#define HEARTBEAT_PERIOD_MS         2000  /* 心跳周期 2秒 */
-#define SPI_TRANS_TIMEOUT_MS        5000  /* SPI 传输超时 5秒 */
 #define FRAME_QUEUE_LENGTH          2     /* 帧队列长度 */
-#define MAX_RX_QUEUE_LENGTH         5     /* 接收指令队列长度 */
+#define HEARTBEAT_PERIOD_MS         5000  /* 心跳周期 5秒 */
 
 /* ============================================================
- *  九、扩展接口预留 (供未来功能扩展使用)
+ *  八、扩展接口预留
  * ============================================================ */
 
-#define PIN_EXPAND_IO_0       21   /* 扩展 IO 0 (状态指示灯等) */
+#define PIN_EXPAND_IO_0       21   /* 扩展 IO 0 */
 #define PIN_EXPAND_IO_1       47   /* 扩展 IO 1 */
 #define PIN_EXPAND_IO_2       48   /* 扩展 IO 2 */
-#define PIN_EXPAND_IO_3       14   /* 扩展 IO 3 (注意避免与摄像头D4冲突，可调) */
+#define PIN_EXPAND_IO_3       14   /* 扩展 IO 3 */
 
 #endif /* CONFIG_H */

@@ -39,9 +39,9 @@ import com.google.android.material.bottomnavigation.BottomNavigationView;
 import com.smarteye.blindguide.ai.TFLiteClassifier;
 import com.smarteye.blindguide.data.AppConfig;
 import com.smarteye.blindguide.logic.ObstacleAnalyzer;
+import com.smarteye.blindguide.network.CameraHttpClient;
 import com.smarteye.blindguide.network.Protocol;
 import com.smarteye.blindguide.network.TCPClient;
-import com.smarteye.blindguide.network.UDPReceiver;
 import com.smarteye.blindguide.tts.TTSManager;
 import com.smarteye.blindguide.ui.DebugFragment;
 import com.smarteye.blindguide.ui.MainFragment;
@@ -69,7 +69,7 @@ public class MainActivity extends AppCompatActivity {
 
     /** 核心组件 */
     private TCPClient tcpClient;
-    private UDPReceiver udpReceiver;
+    private CameraHttpClient cameraClient;  // v3.0: HTTP MJPEG替代UDP
     private TFLiteClassifier classifier;
     private ObstacleAnalyzer analyzer;
     private VoiceControl voiceControl;
@@ -178,11 +178,13 @@ public class MainActivity extends AppCompatActivity {
         // 初始化 TTS
         TTSManager.getInstance().initialize(this);
 
-        // 初始化 TCP 客户端
+        // 初始化 TCP 客户端 (传感器数据)
         tcpClient = new TCPClient();
 
-        // 初始化 UDP 接收器
-        udpReceiver = new UDPReceiver();
+        // v3.0: 初始化 HTTP 摄像头客户端 (替代UDP, 直连摄像板拉流)
+        cameraClient = new CameraHttpClient();
+        // 默认URL: 摄像板静态IP, 可通过传感器JSON中的camera_ip动态更新
+        cameraClient.setStreamUrl("http://" + AppConfig.CAMERA_ESP32_IP + "/video");
 
         // 初始化 TFLite 分类器
         classifier = new TFLiteClassifier();
@@ -209,6 +211,16 @@ public class MainActivity extends AppCompatActivity {
                 // 更新避障分析器
                 analyzer.updateSensorData(data);
 
+                // 动态更新摄像板IP (从传感器JSON获取)
+                if (data.camera_ip != null && !data.camera_ip.isEmpty()) {
+                    String currentUrl = cameraClient != null ?
+                            "http://" + data.camera_ip + "/video" : "";
+                    // IP变更时更新URL
+                    if (cameraClient != null && !currentUrl.isEmpty()) {
+                        cameraClient.setStreamUrl(currentUrl);
+                    }
+                }
+
                 // 转发给调试监听器
                 for (DebugDataListener dl : debugListeners) {
                     dl.onSensorData(data);
@@ -217,7 +229,6 @@ public class MainActivity extends AppCompatActivity {
 
             @Override
             public void onRawData(String rawJson) {
-                // 调试用：原始数据回调
                 Log.d(TAG, "TCP原始数据: " + rawJson);
             }
         });
@@ -237,32 +248,47 @@ public class MainActivity extends AppCompatActivity {
             }
         });
 
-        // 设置 UDP 图像回调（使用 add 而非 set，避免覆盖其他监听器）
-        udpReceiver.addOnImageFrameListener(frame -> {
-            // 转发图像帧给调试监听器
-            for (DebugDataListener dl : debugListeners) {
-                dl.onImageFrame(frame);
+        // v3.0: 设置 HTTP 摄像头帧回调 (替代UDP, 直连摄像板)
+        cameraClient.setOnFrameListener(new CameraHttpClient.OnFrameListener() {
+            @Override
+            public void onFrame(byte[] jpegData, int frameNumber, long fetchTimeMs) {
+                // 构造 ImageFrame 传递给调试监听器
+                Protocol.ImageFrame frame = new Protocol.ImageFrame(
+                        frameNumber, jpegData, 0, 0);
+
+                // 转发图像帧给调试监听器
+                for (DebugDataListener dl : debugListeners) {
+                    dl.onImageFrame(frame);
+                }
+
+                // 调用 TFLite 进行视觉识别
+                if (AppConfig.getInstance().isVisionEnabled() && classifier.isInitialized()) {
+                    classifier.classify(jpegData, new TFLiteClassifier.OnClassifyResultListener() {
+                        @Override
+                        public void onResult(TFLiteClassifier.ClassifyResult result) {
+                            analyzer.updateVisionResult(result);
+                            for (DebugDataListener dl : debugListeners) {
+                                dl.onClassifyResult(result);
+                            }
+                        }
+
+                        @Override
+                        public void onError(String error) {
+                            Log.e(TAG, "TFLite识别错误: " + error);
+                        }
+                    });
+                }
             }
 
-            // 调用 TFLite 进行视觉识别
-            if (AppConfig.getInstance().isVisionEnabled() && classifier.isInitialized()) {
-                classifier.classify(frame.jpegData, new TFLiteClassifier.OnClassifyResultListener() {
-                    @Override
-                    public void onResult(TFLiteClassifier.ClassifyResult result) {
-                        // 更新避障分析器
-                        analyzer.updateVisionResult(result);
+            @Override
+            public void onError(String error) {
+                Log.e(TAG, "HTTP摄像头错误: " + error);
+            }
 
-                        // 转发识别结果给调试监听器
-                        for (DebugDataListener dl : debugListeners) {
-                            dl.onClassifyResult(result);
-                        }
-                    }
-
-                    @Override
-                    public void onError(String error) {
-                        Log.e(TAG, "TFLite识别错误: " + error);
-                    }
-                });
+            @Override
+            public void onStateChanged(boolean connected, String message) {
+                Log.d(TAG, "HTTP摄像头状态: " + (connected ? "已连接" : "断开")
+                        + " - " + message);
             }
         });
     }
@@ -356,11 +382,11 @@ public class MainActivity extends AppCompatActivity {
     }
 
     /**
-     * 获取 UDP 接收器实例
-     * @return UDPReceiver 实例
+     * 获取 HTTP 摄像头客户端实例 (v3.0: 替代UDP)
+     * @return CameraHttpClient 实例
      */
-    public UDPReceiver getUdpReceiver() {
-        return udpReceiver;
+    public CameraHttpClient getCameraClient() {
+        return cameraClient;
     }
 
     /**
@@ -416,19 +442,20 @@ public class MainActivity extends AppCompatActivity {
     @Override
     protected void onResume() {
         super.onResume();
-        // 启动网络通信
+        // 启动TCP传感器连接
         if (tcpClient != null) {
             tcpClient.connect();
         }
-        if (udpReceiver != null) {
-            udpReceiver.startReceive();
+        // v3.0: 启动HTTP摄像头拉流
+        if (cameraClient != null) {
+            cameraClient.start();
         }
     }
 
     @Override
     protected void onPause() {
         super.onPause();
-        // 导盲头环需要持续接收传感器数据，onPause 不主动断开连接
+        // 导盲头环需要持续接收传感器数据，onPause 不主动断开
         // 仅在 onDestroy 时释放所有资源
     }
 
@@ -439,8 +466,8 @@ public class MainActivity extends AppCompatActivity {
         if (tcpClient != null) {
             tcpClient.disconnect();
         }
-        if (udpReceiver != null) {
-            udpReceiver.stopReceive();
+        if (cameraClient != null) {
+            cameraClient.stop();
         }
         if (classifier != null) {
             classifier.release();

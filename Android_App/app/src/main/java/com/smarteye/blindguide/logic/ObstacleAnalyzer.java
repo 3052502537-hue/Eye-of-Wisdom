@@ -143,27 +143,17 @@ public class ObstacleAnalyzer {
             float minDistance = Float.MAX_VALUE;
             String nearestSource = "";
 
-            // 激光测距数据
+            // 激光测距数据 (SDM10)
             if (sensorData != null) {
                 if (sensorData.laser_front > 0 && sensorData.laser_front < minDistance) {
                     minDistance = sensorData.laser_front;
-                    nearestSource = "前方激光";
+                    nearestSource = "SDM10激光";
                 }
 
-                // 前方雷达数据
-                if (sensorData.radar_front != null
-                        && sensorData.radar_front.dist > 0
-                        && sensorData.radar_front.dist < minDistance) {
-                    minDistance = sensorData.radar_front.dist;
-                    nearestSource = "前方雷达";
-                }
-
-                // 后方雷达数据（用于后方来车提醒）
-                if (sensorData.radar_back != null
-                        && sensorData.radar_back.dist > 0
-                        && sensorData.radar_back.dist < AppConfig.DISTANCE_DANGER
-                        && sensorData.radar_back.speed > 0) {
-                    advice.append("后方有物体靠近，");
+                // v3.0: 超声波数据 (HC-SR04, 替代前方雷达)
+                if (sensorData.ultrasonic > 0 && sensorData.ultrasonic < minDistance) {
+                    minDistance = sensorData.ultrasonic;
+                    nearestSource = "HC-SR04超声波";
                 }
             }
 
@@ -282,15 +272,8 @@ public class ObstacleAnalyzer {
             if (riskLevel == AppConfig.RISK_DANGER) {
                 return "请停止前进";
             } else if (riskLevel == AppConfig.RISK_CAUTION) {
-                // 根据雷达角度判断绕行方向
-                if (sensorData != null && sensorData.radar_front != null) {
-                    float angle = sensorData.radar_front.angle;
-                    if (angle > 30) {
-                        return "建议向左绕行";
-                    } else if (angle < -30) {
-                        return "建议向右绕行";
-                    }
-                }
+                // v3.0: HC-SR04为单点传感器，无法判断角度，统一建议减速
+                //       角度/方向判断依赖视觉识别(DetectedObject位置)
                 return "请减速慢行";
             }
             return "可安全前进";

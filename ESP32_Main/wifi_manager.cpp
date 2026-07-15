@@ -1,8 +1,9 @@
 /* ============================================================
  * 文件名: wifi_manager.cpp
- * 功能描述: WiFi 管理实现
- *           实现 AP 热点启动、TCP/UDP 服务器、客户端管理、
- *           传感器JSON广播、JPEG图像UDP分片发送、命令接收
+ * 功能描述: WiFi 管理实现 v3.0
+ *           v3.0: 删除UDP图像发送功能（摄像板直连手机，主控不再中转图像）
+ *           实现 AP 热点启动、TCP 服务器、客户端管理、
+ *           传感器JSON广播、命令接收
  * 依赖关系: Arduino WiFi 库、config.h、protocol.h、wifi_manager.h
  * 接口说明: 见头文件
  * ============================================================ */
@@ -23,7 +24,7 @@
 WifiManager::WifiManager()
     : _tcpServer(nullptr), _apIp(IPAddress(192, 168, 4, 1)),
       _clientCount(0), _cmdCb(nullptr),
-      _apStarted(false), _tcpStarted(false), _udpStarted(false), _rxLen(0)
+      _apStarted(false), _tcpStarted(false), _rxLen(0)
 {
     memset(_rxBuf, 0, sizeof(_rxBuf));
 }
@@ -36,16 +37,14 @@ WifiManager::~WifiManager()
         delete _tcpServer;
         _tcpServer = nullptr;
     }
-    if (_udpStarted) _udp.stop();
     if (_apStarted) WiFi.softAPdisconnect(true);
 }
 
-/* begin - 启动 AP + TCP + UDP */
+/* begin - 启动 AP + TCP */
 bool WifiManager::begin()
 {
     if (!startAP()) return false;
     startTcpServer();
-    startUdpServer();
     return true;
 }
 
@@ -81,15 +80,6 @@ void WifiManager::startTcpServer()
     DBG_PRINTF("[WIFI] TCP server on port %d\n", TCP_PORT);
 }
 
-/* startUdpServer - 启动 UDP 服务器 */
-void WifiManager::startUdpServer()
-{
-    if (_udpStarted) return;
-    _udp.begin(UDP_PORT);
-    _udpStarted = true;
-    DBG_PRINTF("[WIFI] UDP server on port %d\n", UDP_PORT);
-}
-
 /* sendSensorJson - 向所有TCP客户端发送JSON */
 uint8_t WifiManager::sendSensorJson(const char* jsonStr, size_t len)
 {
@@ -104,49 +94,6 @@ uint8_t WifiManager::sendSensorJson(const char* jsonStr, size_t len)
         }
     }
     return sent;
-}
-
-/* sendImageUdp - 发送JPEG图像(UDP分片) */
-uint16_t WifiManager::sendImageUdp(const uint8_t* data, size_t size, uint32_t frameId)
-{
-    if (!_udpStarted || !data || size == 0) return 0;
-
-    /* 计算分片数 */
-    uint16_t sliceTotal = (uint16_t)((size + UDP_IMG_MAX_PAYLOAD - 1) / UDP_IMG_MAX_PAYLOAD);
-    if (sliceTotal == 0) sliceTotal = 1;
-
-    /* 获取第一个客户端的IP/端口(广播到AP子网) */
-    IPAddress bcast = IPAddress(_apIp[0], _apIp[1], _apIp[2], 255);
-
-    uint16_t sentSlices = 0;
-    size_t offset = 0;
-    for (uint16_t s = 0; s < sliceTotal; s++) {
-        uint16_t chunkLen = UDP_IMG_MAX_PAYLOAD;
-        if (offset + chunkLen > size) {
-            chunkLen = (uint16_t)(size - offset);
-        }
-
-        /* 构造UDP包: 头部 + JPEG数据 */
-        uint8_t packet[UDP_PACKET_MAX_SIZE];
-        UdpImgHeader_t* hdr = (UdpImgHeader_t*)packet;
-        hdr->frameId    = frameId;
-        hdr->sliceIndex = s;
-        hdr->sliceTotal = sliceTotal;
-        hdr->dataLen    = chunkLen;
-        memcpy(packet + UDP_IMG_HEADER_LEN, data + offset, chunkLen);
-
-        /* 发送到广播地址(所有连接的App均可收到) */
-        _udp.beginPacket(bcast, UDP_PORT);
-        _udp.write(packet, UDP_IMG_HEADER_LEN + chunkLen);
-        _udp.endPacket();
-
-        offset += chunkLen;
-        sentSlices++;
-    }
-
-    DBG_PRINTF("[WIFI] img sent: frame=%lu size=%lu slices=%u\n",
-               (unsigned long)frameId, (unsigned long)size, sentSlices);
-    return sentSlices;
 }
 
 /* processTcpClients - 处理客户端连接与命令 */
@@ -208,7 +155,6 @@ void WifiManager::handleCommand(const char* line, size_t len)
     AppCommand_t cmd = CMD_QUERY_STATUS;
     if (strstr(line, "set_mode"))        cmd = CMD_SET_MODE;
     else if (strstr(line, "set_warn"))   cmd = CMD_SET_WARN;
-    else if (strstr(line, "set_img"))    cmd = CMD_SET_IMG;
     else if (strstr(line, "set_buzzer")) cmd = CMD_SET_BUZZER;
     else if (strstr(line, "reboot"))     cmd = CMD_REBOOT;
     else if (strstr(line, "calibrate"))  cmd = CMD_CALIBRATE;

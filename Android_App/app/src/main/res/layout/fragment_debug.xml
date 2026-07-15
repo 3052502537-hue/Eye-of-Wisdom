@@ -1,16 +1,17 @@
 <!--
 ============================================================================
 文件名: fragment_debug.xml
-功能描述:
-  - 开发者调试面板布局（连续点击标题5次激活）
-  - 视频预览区：DetectionOverlayView 显示JPEG + AI检测框叠加
-  - 原始传感器数据区：激光/雷达驱动层原始输出
-  - 处理后数据区：融合后的危险等级/最近距离/避障建议
-  - 网络统计区：TCP状态/UDP帧数/丢包率
-  - 日志区：带时间戳的运行日志
+功能描述: 开发者调试面板布局 v3.0
+  - HC-SR04超声波雷达可视化 (类雷达扇形显示)
+  - SDM10激光测距数字显示
+  - AI检测框叠加预览 + 原图直出预览 (双屏)
+  - 处理后的传感器/视觉数据
+  - 网络状态统计
+  - 运行日志
 依赖关系:
   - 被 DebugFragment 加载
-  - DetectionOverlayView 是自定义 View (com.smarteye.blindguide.ui.DetectionOverlayView)
+  - RadarView 是自定义 View (com.smarteye.blindguide.ui.RadarView)
+  - DetectionOverlayView 是自定义 View
   - 视图 ID 与 DebugFragment.java 中 findViewById 对应
 ============================================================================
 -->
@@ -32,7 +33,7 @@
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="🔧 开发者调试面板"
+            android:text="🔧 开发者调试面板 v3.0"
             android:textSize="24sp"
             android:textStyle="bold"
             android:textColor="#FF9800"
@@ -40,7 +41,7 @@
             android:paddingTop="8dp"
             android:paddingBottom="12dp" />
 
-        <!-- ==================== 视频预览 (AI检测框叠加) ==================== -->
+        <!-- ==================== HC-SR04 超声波雷达可视化 ==================== -->
         <androidx.cardview.widget.CardView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
@@ -65,7 +66,59 @@
                         android:layout_width="0dp"
                         android:layout_height="wrap_content"
                         android:layout_weight="1"
-                        android:text="📷 视频预览 (AI叠加)"
+                        android:text="📡 HC-SR04 超声波雷达"
+                        android:textSize="16sp"
+                        android:textStyle="bold"
+                        android:textColor="#00E5FF" />
+
+                    <Button
+                        android:id="@+id/btn_http_camera"
+                        android:layout_width="wrap_content"
+                        android:layout_height="32dp"
+                        android:text="HTTP直连"
+                        android:textSize="11sp"
+                        android:textColor="#FFFFFF"
+                        android:backgroundTint="#1565C0"
+                        android:minWidth="0dp"
+                        android:paddingStart="10dp"
+                        android:paddingEnd="10dp" />
+                </LinearLayout>
+
+                <com.smarteye.blindguide.ui.RadarView
+                    android:id="@+id/radar_view"
+                    android:layout_width="match_parent"
+                    android:layout_height="280dp"
+                    android:contentDescription="HC-SR04超声波雷达可视化" />
+
+            </LinearLayout>
+        </androidx.cardview.widget.CardView>
+
+        <!-- ==================== AI检测框叠加预览 ==================== -->
+        <androidx.cardview.widget.CardView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="10dp"
+            app:cardCornerRadius="10dp"
+            app:cardElevation="3dp"
+            app:cardBackgroundColor="#16213E">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:padding="10dp">
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:paddingBottom="6dp">
+
+                    <TextView
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="🤖 AI视觉处理 (检测框叠加)"
                         android:textSize="16sp"
                         android:textStyle="bold"
                         android:textColor="#4FC3F7" />
@@ -82,14 +135,14 @@
                 <com.smarteye.blindguide.ui.DetectionOverlayView
                     android:id="@+id/detection_overlay"
                     android:layout_width="match_parent"
-                    android:layout_height="260dp"
+                    android:layout_height="240dp"
                     android:background="#000000"
-                    android:contentDescription="视频预览与AI检测框叠加" />
+                    android:contentDescription="AI检测框叠加视频" />
 
             </LinearLayout>
         </androidx.cardview.widget.CardView>
 
-        <!-- ==================== 原始视频 (无叠加, 直接显示JPEG) ==================== -->
+        <!-- ==================== 原始视频直出 ==================== -->
         <androidx.cardview.widget.CardView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
@@ -114,7 +167,7 @@
                         android:layout_width="0dp"
                         android:layout_height="wrap_content"
                         android:layout_weight="1"
-                        android:text="🖼️ 原始视频 (直出)"
+                        android:text="🖼️ 原图直出 (原始画面)"
                         android:textSize="16sp"
                         android:textStyle="bold"
                         android:textColor="#66BB6A" />
@@ -125,26 +178,13 @@
                         android:layout_height="wrap_content"
                         android:text="等待..."
                         android:textSize="12sp"
-                        android:textColor="#90A4AE"
-                        android:layout_marginEnd="8dp" />
-
-                    <Button
-                        android:id="@+id/btn_http_camera"
-                        android:layout_width="wrap_content"
-                        android:layout_height="32dp"
-                        android:text="HTTP直连"
-                        android:textSize="11sp"
-                        android:textColor="#FFFFFF"
-                        android:backgroundTint="#1565C0"
-                        android:minWidth="0dp"
-                        android:paddingStart="10dp"
-                        android:paddingEnd="10dp" />
+                        android:textColor="#90A4AE" />
                 </LinearLayout>
 
                 <ImageView
                     android:id="@+id/image_raw_video"
                     android:layout_width="match_parent"
-                    android:layout_height="260dp"
+                    android:layout_height="240dp"
                     android:background="#000000"
                     android:scaleType="fitCenter"
                     android:contentDescription="原始JPEG视频直出" />
@@ -152,7 +192,7 @@
             </LinearLayout>
         </androidx.cardview.widget.CardView>
 
-        <!-- ==================== 原始传感器数据 ==================== -->
+        <!-- ==================== 传感器数据(激光+超声波+camera_ip) ==================== -->
         <androidx.cardview.widget.CardView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
@@ -170,39 +210,39 @@
                 <TextView
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:text="📡 原始传感器数据"
+                    android:text="📡 传感器数据 (SDM10 + HC-SR04)"
                     android:textSize="16sp"
                     android:textStyle="bold"
                     android:textColor="#4CAF50"
                     android:paddingBottom="8dp" />
 
                 <TextView
-                    android:id="@+id/text_raw_laser"
+                    android:id="@+id/text_laser_dist"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:text="激光: --"
-                    android:textSize="13sp"
+                    android:text="🔴 SDM10激光: --"
+                    android:textSize="15sp"
                     android:textColor="#B0BEC5"
                     android:fontFamily="monospace"
-                    android:paddingBottom="2dp" />
+                    android:paddingBottom="4dp" />
 
                 <TextView
-                    android:id="@+id/text_raw_radar_front"
+                    android:id="@+id/text_ultrasonic_dist"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:text="前雷达: --"
-                    android:textSize="13sp"
+                    android:text="🔵 HC-SR04超声波: --"
+                    android:textSize="15sp"
                     android:textColor="#B0BEC5"
                     android:fontFamily="monospace"
-                    android:paddingBottom="2dp" />
+                    android:paddingBottom="4dp" />
 
                 <TextView
-                    android:id="@+id/text_raw_radar_rear"
+                    android:id="@+id/text_camera_ip"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:text="后雷达: --"
-                    android:textSize="13sp"
-                    android:textColor="#B0BEC5"
+                    android:text="📷 摄像板IP: --"
+                    android:textSize="15sp"
+                    android:textColor="#81D4FA"
                     android:fontFamily="monospace"
                     android:paddingBottom="2dp" />
 
@@ -236,7 +276,7 @@
                 <TextView
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:text="⚙️ 处理后数据"
+                    android:text="⚙️ 处理与决策"
                     android:textSize="16sp"
                     android:textStyle="bold"
                     android:textColor="#FF9800"
@@ -312,7 +352,7 @@
                 <TextView
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:text="🌐 网络统计"
+                    android:text="🌐 网络状态"
                     android:textSize="16sp"
                     android:textStyle="bold"
                     android:textColor="#CE93D8"
@@ -340,7 +380,7 @@
             </LinearLayout>
         </androidx.cardview.widget.CardView>
 
-        <!-- ==================== 日志显示 ==================== -->
+        <!-- ==================== 日志 ==================== -->
         <androidx.cardview.widget.CardView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"

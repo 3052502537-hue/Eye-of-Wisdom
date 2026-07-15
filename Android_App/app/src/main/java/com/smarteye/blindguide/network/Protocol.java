@@ -2,17 +2,17 @@
  * ============================================================================
  * 文件名: Protocol.java
  * 功能描述:
- *   - 定义 ESP32 与 Android APP 之间的通信协议数据结构
+ *   - 定义 ESP32 与 Android APP 之间的通信协议数据结构 v3.0
+ *   - v3.0: 移除雷达(RadarData)，新增超声波(ultrasonic)和摄像板IP(camera_ip)
+ *          图像改为HTTP MJPEG直连摄像板，不再通过UDP
  *   - 解析传感器 JSON 数据、控制命令 JSON 数据
- *   - 封装图像 UDP 数据包格式（帧号 + JPEG 数据）
+ *   - 封装图像数据帧结构
  * 依赖关系:
  *   - 依赖 Gson 库进行 JSON 解析
  *   - 被 TCPClient 调用解析接收到的传感器数据
- *   - 被 UDPReceiver 调用解析接收到的图像数据
  *   - 被 ObstacleAnalyzer 引用数据结构
  * 接口说明:
- *   - SensorData: 传感器数据结构类
- *   - RadarData: 雷达数据结构类
+ *   - SensorData: 传感器数据结构类 (v3.0: 激光+超声波+camera_ip)
  *   - Command: 控制命令结构类
  *   - ImageFrame: 图像帧结构类
  *   - parseSensorData(String): 解析 JSON 为 SensorData 对象
@@ -24,7 +24,7 @@ package com.smarteye.blindguide.network;
 import com.google.gson.Gson;
 
 /**
- * 通信协议数据结构与解析工具类
+ * 通信协议数据结构与解析工具类 v3.0
  */
 public class Protocol {
 
@@ -45,84 +45,44 @@ public class Protocol {
     /** 请求传感器数据 */
     public static final String ACTION_REQ_SENSOR = "req_sensor";
 
-    /** 请求图像数据 */
-    public static final String ACTION_REQ_IMAGE = "req_image";
-
     /** 心跳检测 */
     public static final String ACTION_PING = "ping";
 
     /** 重启设备 */
     public static final String ACTION_REBOOT = "reboot";
 
-    // ==================== UDP 图像包协议(与ESP32固件 protocol.h UdpImgHeader_t 一致) ====================
-
-    /** UDP 图像包头部长度（字节）：4B帧号 + 2B分片序号 + 2B总分片数 + 2B数据长度 = 10字节 */
-    public static final int UDP_IMAGE_HEADER_SIZE = 10;
-
     /**
-     * 雷达数据结构
-     * 包含距离、速度、角度信息
-     */
-    public static class RadarData {
-        /** 距离（米） */
-        public float dist;
-
-        /** 相对速度（米/秒），正值表示靠近 */
-        public float speed;
-
-        /** 角度（度），0为正前方，正值偏右，负值偏左 */
-        public float angle;
-
-        public RadarData() {}
-
-        /**
-         * 构造雷达数据
-         * @param dist 距离（米）
-         * @param speed 相对速度（米/秒）
-         * @param angle 角度（度）
-         */
-        public RadarData(float dist, float speed, float angle) {
-            this.dist = dist;
-            this.speed = speed;
-            this.angle = angle;
-        }
-
-        @Override
-        public String toString() {
-            return String.format("雷达[距离=%.2fm, 速度=%.2fm/s, 角度=%.1f°]", dist, speed, angle);
-        }
-    }
-
-    /**
-     * 传感器数据结构
-     * 对应 JSON: {"type":"sensor","laser_front":2.5,"radar_front":{...},...}
+     * 传感器数据结构 v3.0
+     * 对应 JSON:
+     * {"type":"sensor","ts":123456,"laser_front":1.23,"ultrasonic":2.10,
+     *  "camera_ip":"192.168.4.10","battery":85,"mode":2,"level":0}
      */
     public static class SensorData {
         /** 数据类型，固定为 "sensor" */
         public String type;
 
-        /** 前方激光测距数据（米） */
+        /** ESP32 时间戳(ms) */
+        public long ts;
+
+        /** 前方激光测距数据 (SDM10, 米)，-1表示无效 */
         public float laser_front;
 
-        /** 前方雷达数据 */
-        public RadarData radar_front;
+        /** 前方超声波测距数据 (HC-SR04, 米)，-1表示无效 */
+        public float ultrasonic;
 
-        /** 后方雷达数据 */
-        public RadarData radar_back;
+        /** 摄像板ESP32的IP地址 (手机直连拉流) */
+        public String camera_ip;
 
-        /** 电池电量百分比（0-100） */
+        /** 电池电量百分比（暂未接入，固定-1） */
         public int battery;
 
-        /** 当前工作模式（1-4） */
+        /** 当前工作模式（1=传感器,2=自动,3=风险播报,4=调试） */
         public int mode;
 
         /** ESP32 决策任务输出的危险等级 (0=SAFE, 1=CAUTION, 2=DANGER) */
         public int level;
 
-        /** ESP32 是否有新图像帧可用 (0/1) */
-        public int img;
-
-        /** 接收时间戳（毫秒） */
+        /** 接收时间戳（毫秒，本地赋值） */
         public transient long timestamp;
 
         public SensorData() {
@@ -130,10 +90,32 @@ public class Protocol {
             this.timestamp = System.currentTimeMillis();
         }
 
+        /**
+         * 获取前方最近距离 (激光和超声波中取最近值)
+         * @return 最近距离(米)，-1表示都无效
+         */
+        public float getMinDistance() {
+            float min = Float.MAX_VALUE;
+            if (laser_front > 0) min = laser_front;
+            if (ultrasonic > 0 && ultrasonic < min) min = ultrasonic;
+            return (min < Float.MAX_VALUE) ? min : -1.0f;
+        }
+
+        /**
+         * 获取最近距离的来源描述
+         */
+        public String getMinDistanceSource() {
+            float min = Float.MAX_VALUE;
+            String src = "无";
+            if (laser_front > 0) { min = laser_front; src = "激光(SDM10)"; }
+            if (ultrasonic > 0 && ultrasonic < min) { src = "超声波(HC-SR04)"; }
+            return src;
+        }
+
         @Override
         public String toString() {
-            return String.format("传感器[激光=%.2fm, 电量=%d%%, 模式=%d]",
-                    laser_front, battery, mode);
+            return String.format("传感器[激光=%.2fm, 超声波=%.2fm, 摄像板=%s, 电量=%d%%, 模式=%d, 等级=%d]",
+                    laser_front, ultrasonic, camera_ip, battery, mode, level);
         }
     }
 
@@ -142,24 +124,14 @@ public class Protocol {
      * 对应 JSON: {"type":"cmd","action":"set_mode","value":2}
      */
     public static class Command {
-        /** 数据类型，固定为 "cmd" */
         public String type;
-
-        /** 命令动作 */
         public String action;
-
-        /** 命令值 */
         public int value;
 
         public Command() {
             this.type = TYPE_CMD;
         }
 
-        /**
-         * 构造控制命令
-         * @param action 命令动作常量
-         * @param value 命令值
-         */
         public Command(String action, int value) {
             this.type = TYPE_CMD;
             this.action = action;
@@ -169,40 +141,30 @@ public class Protocol {
 
     /**
      * 图像帧数据结构
-     * UDP 接收的图像数据包
+     * 来自 HTTP MJPEG 流或单帧捕获
      */
     public static class ImageFrame {
-        /** 帧号（用于丢包检测和排序） */
+        /** 帧号 */
         public int frameNumber;
 
         /** JPEG 图像二进制数据 */
         public byte[] jpegData;
 
+        /** 图像宽度 */
+        public int width;
+
+        /** 图像高度 */
+        public int height;
+
         /** 接收时间戳（毫秒） */
         public long timestamp;
 
-        public ImageFrame(int frameNumber, byte[] jpegData) {
+        public ImageFrame(int frameNumber, byte[] jpegData, int width, int height) {
             this.frameNumber = frameNumber;
             this.jpegData = jpegData;
+            this.width = width;
+            this.height = height;
             this.timestamp = System.currentTimeMillis();
-        }
-    }
-
-    /**
-     * v1.1: UDP 分片信息
-     * 单个 UDP 包中提取的切片元数据 + 数据
-     */
-    public static class SliceInfo {
-        public int frameNumber;
-        public int sliceIndex;
-        public int sliceTotal;
-        public byte[] jpegSlice;
-
-        public SliceInfo(int frameNumber, int sliceIndex, int sliceTotal, byte[] jpegSlice) {
-            this.frameNumber = frameNumber;
-            this.sliceIndex = sliceIndex;
-            this.sliceTotal = sliceTotal;
-            this.jpegSlice = jpegSlice;
         }
     }
 
@@ -213,7 +175,7 @@ public class Protocol {
 
     /**
      * 解析传感器 JSON 数据
-     * @param json JSON 字符串，格式如 {"type":"sensor","laser_front":2.5,...}
+     * @param json JSON 字符串
      * @return SensorData 对象，解析失败返回 null
      */
     public static SensorData parseSensorData(String json) {
@@ -224,14 +186,13 @@ public class Protocol {
             }
             return data;
         } catch (Exception e) {
-            // 解析失败时返回 null，由调用方处理
             return null;
         }
     }
 
     /**
-     * 构建控制命令 JSON 字符串（通用格式，兼容旧代码）
-     * @param action 命令动作常量（如 ACTION_SET_MODE）
+     * 构建控制命令 JSON 字符串（通用格式）
+     * @param action 命令动作常量
      * @param value 命令值
      * @return JSON 字符串
      */
@@ -241,145 +202,40 @@ public class Protocol {
     }
 
     // ==================== ESP32 兼容命令构建方法 ====================
-    // ESP32 wifi_manager.cpp 使用 strstr() 简单关键字匹配解析命令，
-    // 以下方法生成 ESP32 可直接解析的 JSON 格式。
 
-    /**
-     * 构建设置模式命令（ESP32 兼容格式）
-     * ESP32 解析: strstr("set_mode") 匹配类型, strstr("\"mode\":") 取值
-     * @param mode 模式值 (1-4)
-     * @return JSON 字符串 "{\"cmd\":\"set_mode\",\"mode\":N}"
-     */
+    /** 构建设置模式命令（ESP32 兼容格式） */
     public static String buildSetModeCommand(int mode) {
         return "{\"cmd\":\"set_mode\",\"mode\":" + mode + "}";
     }
 
-    /**
-     * 构建设置预警阈值命令（ESP32 兼容格式）
-     * @param dAtt 注意距离（米）
-     * @param dWar 警告距离（米）
-     * @param dDan 危险距离（米）
-     * @return JSON 字符串
-     */
+    /** 构建设置预警阈值命令（ESP32 兼容格式） */
     public static String buildSetWarnCommand(float dAtt, float dWar, float dDan) {
         return "{\"cmd\":\"set_warn\",\"d_att\":" + dAtt
                 + ",\"d_war\":" + dWar + ",\"d_dan\":" + dDan + "}";
     }
 
-    /**
-     * 构建设置图像参数命令（ESP32 兼容格式）
-     * @param res 分辨率 (0=QVGA, 1=VGA)
-     * @param quality JPEG 质量 (1-31)
-     * @return JSON 字符串
-     */
-    public static String buildSetImgCommand(int res, int quality) {
-        return "{\"cmd\":\"set_img\",\"res\":" + res + ",\"q\":" + quality + "}";
-    }
-
-    /**
-     * 构建蜂鸣器控制命令（ESP32 兼容格式）
-     * @param on true=开启, false=关闭
-     * @return JSON 字符串
-     */
+    /** 构建蜂鸣器控制命令（ESP32 兼容格式） */
     public static String buildSetBuzzerCommand(boolean on) {
         return "{\"cmd\":\"set_buzzer\",\"on\":" + (on ? 1 : 0) + "}";
     }
 
-    /**
-     * 构建重启命令（ESP32 兼容格式）
-     * @return JSON 字符串 "{\"cmd\":\"reboot\"}"
-     */
+    /** 构建重启命令 */
     public static String buildRebootCommand() {
         return "{\"cmd\":\"reboot\"}";
     }
 
-    /**
-     * 构建校准命令（ESP32 兼容格式）
-     * @return JSON 字符串 "{\"cmd\":\"calibrate\"}"
-     */
+    /** 构建校准命令 */
     public static String buildCalibrateCommand() {
         return "{\"cmd\":\"calibrate\"}";
     }
 
-    /**
-     * 构建查询状态命令（ESP32 兼容格式）
-     * @return JSON 字符串 "{\"cmd\":\"query\"}"
-     */
+    /** 构建查询状态命令 */
     public static String buildQueryStatusCommand() {
         return "{\"cmd\":\"query\"}";
     }
 
-    /**
-     * 构建心跳命令 JSON 字符串
-     * @return 心跳命令 JSON
-     */
+    /** 构建心跳命令 */
     public static String buildPingCommand() {
         return buildCommand(ACTION_PING, 0);
-    }
-
-    /**
-     * v1.1: 解析 UDP 图像分片 (不尝试解码, 仅提取分片信息供重组)
-     * 协议格式(与ESP32固件 UdpImgHeader_t 一致):
-     *   [4B帧号LE][2B分片序号LE][2B总分片数LE][2B数据长度LE][JPEG分片数据]
-     * @param buffer 接收到的字节数组
-     * @param length 实际数据长度
-     * @return SliceInfo 对象，解析失败返回 null
-     */
-    public static SliceInfo parseImageSlice(byte[] buffer, int length) {
-        try {
-            if (length < UDP_IMAGE_HEADER_SIZE) return null;
-
-            int frameNumber = bytesToInt(buffer, 0);
-            int sliceIndex  = ((buffer[4] & 0xFF) | ((buffer[5] & 0xFF) << 8));
-            int sliceTotal  = ((buffer[6] & 0xFF) | ((buffer[7] & 0xFF) << 8));
-            int dataLen     = ((buffer[8] & 0xFF) | ((buffer[9] & 0xFF) << 8));
-
-            if (length < UDP_IMAGE_HEADER_SIZE + dataLen) return null;
-            if (dataLen <= 0) return null;
-
-            byte[] jpegSlice = new byte[dataLen];
-            System.arraycopy(buffer, UDP_IMAGE_HEADER_SIZE, jpegSlice, 0, dataLen);
-
-            return new SliceInfo(frameNumber, sliceIndex, sliceTotal, jpegSlice);
-        } catch (Exception e) {
-            return null;
-        }
-    }
-
-    /**
-     * 解析 UDP 图像数据包(与ESP32固件 UdpImgHeader_t 一致)
-     * 保留旧接口兼容, 内部调用 parseImageSlice 并直接返回单包数据
-     */
-    public static ImageFrame parseImagePacket(byte[] buffer, int length) {
-        SliceInfo slice = parseImageSlice(buffer, length);
-        if (slice == null) return null;
-        return new ImageFrame(slice.frameNumber, slice.jpegSlice);
-    }
-
-    /**
-     * 小端序字节数组转 int
-     * @param buffer 字节数组
-     * @param offset 起始偏移
-     * @return 转换后的 int 值
-     */
-    private static int bytesToInt(byte[] buffer, int offset) {
-        return (buffer[offset] & 0xFF)
-                | ((buffer[offset + 1] & 0xFF) << 8)
-                | ((buffer[offset + 2] & 0xFF) << 16)
-                | ((buffer[offset + 3] & 0xFF) << 24);
-    }
-
-    /**
-     * int 转小端序字节数组
-     * @param value int 值
-     * @return 4 字节数组
-     */
-    public static byte[] intToBytes(int value) {
-        return new byte[] {
-                (byte) (value & 0xFF),
-                (byte) ((value >> 8) & 0xFF),
-                (byte) ((value >> 16) & 0xFF),
-                (byte) ((value >> 24) & 0xFF)
-        };
     }
 }

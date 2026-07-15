@@ -1,14 +1,16 @@
 /* ============================================================
  * 文件名: task_manager.cpp
- * 功能描述: FreeRTOS 任务管理实现
- *           实现5个任务的创建、任务函数逻辑、任务间数据共享
+ * 功能描述: FreeRTOS 任务管理实现 v3.0
+ *           v3.0: 彻底删除 taskSpi (SPI通信)、删除所有雷达相关代码
+ *                 taskSensor 只读取激光+超声波
+ *                 taskWifi 仅发送传感器JSON (含camera_ip)
+ *                 任务精简为4个
  * 依赖关系: Arduino FreeRTOS、各模块驱动、task_manager.h
  * 接口说明: 见头文件
  *
  * 任务职责:
- *   taskSensor   - 周期读取激光+前后雷达,写入共享SensorFrame
- *   taskSpi      - 响应数据就绪中断读取摄像头图像帧
- *   taskWifi     - 周期上报传感器JSON + 发送图像UDP + 处理TCP命令
+ *   taskSensor   - 周期读取激光+超声波,写入共享SensorFrame
+ *   taskWifi     - 周期上报传感器JSON(含摄像板IP) + 处理TCP命令
  *   taskDecision - 周期评估危险等级,控制蜂鸣器/RGB报警
  *   taskWeb      - 处理Web HTTP请求
  * ============================================================ */
@@ -30,7 +32,7 @@ static TaskManager* g_tm = nullptr;
 
 /* 构造函数 */
 TaskManager::TaskManager()
-    : _hSensor(nullptr), _hSpi(nullptr), _hWifi(nullptr),
+    : _hSensor(nullptr), _hWifi(nullptr),
       _hDecision(nullptr), _hWeb(nullptr), _mutex(nullptr),
       _workMode(MODE_AUTO), _tasksRunning(false)
 {
@@ -60,7 +62,7 @@ bool TaskManager::begin()
     return true;
 }
 
-/* startTasks - 创建并启动5个任务 */
+/* startTasks - 创建并启动4个任务 */
 bool TaskManager::startTasks()
 {
     if (_tasksRunning) return true;
@@ -68,23 +70,19 @@ bool TaskManager::startTasks()
     BaseType_t r1 = xTaskCreatePinnedToCore(taskSensor,   "Sensor",
                        TASK_STACK_SENSOR,   this, TASK_PRIORITY_SENSOR,
                        &_hSensor,   TASK_CORE_SENSOR);
-    BaseType_t r2 = xTaskCreatePinnedToCore(taskSpi,      "SpiComm",
-                       TASK_STACK_SPI,      this, TASK_PRIORITY_SPI,
-                       &_hSpi,      TASK_CORE_SPI);
-    BaseType_t r3 = xTaskCreatePinnedToCore(taskWifi,     "WiFi",
+    BaseType_t r2 = xTaskCreatePinnedToCore(taskWifi,     "WiFi",
                        TASK_STACK_WIFI,     this, TASK_PRIORITY_WIFI,
                        &_hWifi,     TASK_CORE_WIFI);
-    BaseType_t r4 = xTaskCreatePinnedToCore(taskDecision, "Decision",
+    BaseType_t r3 = xTaskCreatePinnedToCore(taskDecision, "Decision",
                        TASK_STACK_DECISION, this, TASK_PRIORITY_DECISION,
                        &_hDecision, TASK_CORE_DECISION);
-    BaseType_t r5 = xTaskCreatePinnedToCore(taskWeb,      "Web",
+    BaseType_t r4 = xTaskCreatePinnedToCore(taskWeb,      "Web",
                        TASK_STACK_WEB,      this, TASK_PRIORITY_WEB,
                        &_hWeb,      TASK_CORE_WEB);
 
-    _tasksRunning = (r1 == pdPASS && r2 == pdPASS && r3 == pdPASS &&
-                     r4 == pdPASS && r5 == pdPASS);
+    _tasksRunning = (r1 == pdPASS && r2 == pdPASS && r3 == pdPASS && r4 == pdPASS);
 
-    DBG_PRINTF("[TM] tasks %s\n", _tasksRunning ? "started" : "CREATE FAIL");
+    DBG_PRINTF("[TM] tasks %s\n", _tasksRunning ? "started (4 tasks)" : "CREATE FAIL");
     return _tasksRunning;
 }
 
@@ -93,7 +91,6 @@ void TaskManager::stopAll()
 {
     if (!_tasksRunning) return;
     if (_hSensor)   vTaskSuspend(_hSensor);
-    if (_hSpi)      vTaskSuspend(_hSpi);
     if (_hWifi)     vTaskSuspend(_hWifi);
     if (_hDecision) vTaskSuspend(_hDecision);
     if (_hWeb)      vTaskSuspend(_hWeb);
@@ -122,32 +119,29 @@ bool TaskManager::getSensorFrame(SensorFrame_t* outFrame)
     return false;
 }
 
-/* evaluateDanger - 危险等级判断(3级: SAFE/CAUTION/DANGER, 与APP一致)
+/* evaluateDanger - 危险等级判断(融合激光+超声波)
  *
+ * 融合策略: 取激光和超声波中最近的距离值
  * 阈值逻辑:
  *   minDist < WARN_DISTANCE_DANGER (1.0m)  → DANGER
  *   minDist < WARN_DISTANCE_WARNING(2.5m)  → CAUTION
  *   minDist ≥ 2.5m                          → SAFE
- *
- * 注意: WARN_DISTANCE_ATTENTION(3.0m) 为预留阈值, 当前3级系统中未使用,
- *       未来扩展4级预警时可作为"注意"级别边界.
- *
- * 融合策略: 优先激光(精确), 雷达辅助(运动目标)
  */
 DangerLevel_t TaskManager::evaluateDanger(const SensorFrame_t* frame)
 {
     if (!frame) return LEVEL_SAFE;
 
-    /* 取前方最近距离(激光优先,其次雷达) */
+    /* 取前方最近距离(激光+超声波融合) */
     float minDist = 999.0f;
+
+    /* 激光优先(精度高，量程远) */
     if (frame->laser.valid && frame->laser.distance > 0) {
         minDist = frame->laser.distance;
     }
-    for (uint8_t i = 0; i < frame->radarFront.count; i++) {
-        if (frame->radarFront.targets[i].distance > 0 &&
-            frame->radarFront.targets[i].distance < minDist) {
-            minDist = frame->radarFront.targets[i].distance;
-        }
+
+    /* 超声波辅助(近距离盲区补充, HC-SR04最近可测2cm) */
+    if (frame->ultrasonicDist > 0 && frame->ultrasonicDist < minDist) {
+        minDist = frame->ultrasonicDist;
     }
 
     /* 按阈值判断等级(3级, 与APP AppConfig.java 一致) */
@@ -157,9 +151,9 @@ DangerLevel_t TaskManager::evaluateDanger(const SensorFrame_t* frame)
 }
 
 /* ============================================================
- * taskSensor - 传感器采集任务
+ * taskSensor - 传感器采集任务 (v3.0: 激光 + 超声波)
  *   周期: TASK_PERIOD_SENSOR_MS (50ms / 20Hz)
- *   读取激光+前后雷达,组装SensorFrame并更新共享区
+ *   读取激光+超声波,组装SensorFrame并更新共享区
  * ============================================================ */
 void TaskManager::taskSensor(void* arg)
 {
@@ -182,18 +176,9 @@ void TaskManager::taskSensor(void* arg)
             frame.laser.valid = 0;
         }
 
-        /* 读取前向雷达 */
-        uint8_t cnt = 0;
-        if (self->_radarFront.readTargets(frame.radarFront.targets, &cnt)) {
-            frame.radarFront.count = cnt;
-            frame.radarFront.valid = 1;
-        }
-
-        /* 读取后向雷达 */
-        if (self->_radarRear.readTargets(frame.radarRear.targets, &cnt)) {
-            frame.radarRear.count = cnt;
-            frame.radarRear.valid = 1;
-        }
+        /* 读取 HC-SR04 超声波 */
+        float usDist = self->_ultrasonic.readDistance();
+        frame.ultrasonicDist = usDist;  // -1.0f 表示无效
 
         /* 更新共享数据 */
         self->updateSensorFrame(&frame);
@@ -207,30 +192,14 @@ void TaskManager::taskSensor(void* arg)
 }
 
 /* ============================================================
- * taskSpi - SPI通信任务
- *   等待数据就绪中断标志,读取并重组图像帧
- * ============================================================ */
-void TaskManager::taskSpi(void* arg)
-{
-    TaskManager* self = (TaskManager*)arg;
-
-    for (;;) {
-        /* 尝试读取SPI帧(内部检查中断标志) */
-        self->_spi.readFrameIfReady();
-
-        /* SPI任务较频繁,短延时让出CPU */
-        vTaskDelay(pdMS_TO_TICKS(5));
-    }
-}
-
-/* ============================================================
- * taskWifi - WiFi通信任务
- *   周期上报传感器JSON + 发送图像UDP + 处理TCP客户端
+ * taskWifi - WiFi通信任务 (v3.0: 仅TCP传感器上报，含camera_ip)
+ *   周期上报传感器JSON + 处理TCP客户端
+ *   JSON包含camera_ip字段，手机App据此直连摄像板HTTP拉流
  * ============================================================ */
 void TaskManager::taskWifi(void* arg)
 {
     TaskManager* self = (TaskManager*)arg;
-    char jsonBuf[1024];
+    char jsonBuf[512];
 
     for (;;) {
         uint32_t startMs = millis();
@@ -242,41 +211,24 @@ void TaskManager::taskWifi(void* arg)
         if (self->_wifi.isClientConnected()) {
             SensorFrame_t f;
             if (self->getSensorFrame(&f)) {
-                /* 取最近雷达目标(用于APP端融合) */
-                RadarTarget_t ft = {0};
-                RadarTarget_t rt = {0};
-                if (f.radarFront.valid && f.radarFront.count > 0) {
-                    ft = f.radarFront.targets[0];
-                }
-                if (f.radarRear.valid && f.radarRear.count > 0) {
-                    rt = f.radarRear.targets[0];
-                }
-
-                /* 组装JSON(字段名与Android APP Protocol.java SensorData一致) */
+                /* 组装JSON (v3.0: 激光+超声波+camera_ip，无雷达) */
                 int n = snprintf(jsonBuf, sizeof(jsonBuf),
                     "{\"type\":\"sensor\",\"ts\":%lu,"
                     "\"laser_front\":%.2f,"
-                    "\"radar_front\":{\"dist\":%.2f,\"speed\":%.2f,\"angle\":%.1f},"
-                    "\"radar_back\":{\"dist\":%.2f,\"speed\":%.2f,\"angle\":%.1f},"
-                    "\"battery\":%d,\"mode\":%d,\"level\":%u,\"img\":%d}",
+                    "\"ultrasonic\":%.2f,"
+                    "\"camera_ip\":\"%s\","
+                    "\"battery\":%d,\"mode\":%d,\"level\":%u}",
                     (unsigned long)f.timestamp,
                     f.laser.valid ? f.laser.distance : -1.0f,
-                    ft.distance, ft.speed, ft.angle,
-                    rt.distance, rt.speed, rt.angle,
+                    f.ultrasonicDist,
+                    CAMERA_ESP32_STATIC_IP,
                     -1,   // battery: 暂未接入电量检测, -1表示未知
                     (int)self->_workMode,
-                    (unsigned)f.level,
-                    self->_spi.isFrameReady() ? 1 : 0);
+                    (unsigned)f.level);
 
                 if (n > 0 && n < (int)sizeof(jsonBuf)) {
                     self->_wifi.sendSensorJson(jsonBuf, n);
                 }
-            }
-
-            /* 3. 发送图像UDP(若有新帧) */
-            ImageFrame_t img;
-            if (self->_spi.getLatestFrame(&img) && img.size > 0) {
-                self->_wifi.sendImageUdp(img.data, img.size, img.frameId);
             }
         }
 
@@ -289,7 +241,7 @@ void TaskManager::taskWifi(void* arg)
 }
 
 /* ============================================================
- * taskDecision - 主控决策任务
+ * taskDecision - 主控决策任务 (v3.0: 激光+超声波融合判断)
  *   周期评估危险等级,控制蜂鸣器/RGB报警
  * ============================================================ */
 void TaskManager::taskDecision(void* arg)
@@ -322,7 +274,7 @@ void TaskManager::taskDecision(void* arg)
                 xSemaphoreGive(self->_mutex);
             }
 
-            /* 控制报警(使用局部变量, 避免无锁访问共享数据) */
+            /* 控制报警 */
             if (finalLevel >= LEVEL_DANGER) {
                 self->_alarm.setDangerAlarm(true);
                 self->_alarm.setSystemState(SYS_STATE_DANGER);
@@ -347,7 +299,7 @@ void TaskManager::taskDecision(void* arg)
 }
 
 /* ============================================================
- * taskWeb - Web服务任务
+ * taskWeb - Web服务任务 (v3.0: 激光+超声波数据展示)
  *   处理HTTP请求,并同步Web参数到传感器数据展示
  * ============================================================ */
 void TaskManager::taskWeb(void* arg)
@@ -368,11 +320,9 @@ void TaskManager::taskWeb(void* arg)
         if (self->_web.isCalibrateRequested()) {
             self->_web.clearCalibrateRequest();
             DBG_PRINTLN("[TM] web calibrate triggered");
-            /* 执行传感器自检作为校准流程 */
             bool laserOk = self->_sdm10.selfTest();
-            bool radarOk = self->_radarFront.selfTest();
-            DBG_PRINTF("[TM] calibrate result: laser=%s radar=%s\n",
-                       laserOk ? "OK" : "FAIL", radarOk ? "OK" : "FAIL");
+            DBG_PRINTF("[TM] calibrate result: laser=%s\n",
+                       laserOk ? "OK" : "FAIL");
             self->_alarm.setSystemState(laserOk ? SYS_STATE_NORMAL : SYS_STATE_FAULT);
         }
         if (self->_web.isRebootRequested()) {

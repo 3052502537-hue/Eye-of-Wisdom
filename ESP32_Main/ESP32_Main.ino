@@ -1,25 +1,40 @@
 /* ============================================================
  * 文件名: ESP32_Main.ino
- * 功能描述: 导盲头环主控板主程序入口
- *           负责 setup() 硬件初始化与启动流程，
- *           loop() 空闲处理(核心逻辑由FreeRTOS任务承担)
+ * 功能描述: 导盲头环主控板主程序入口 v3.0
+ *           v3.0: 彻底移除 SPI 主机通信、Rd-03D 毫米波雷达（前后全删）
+ *                 只负责 HC-SR04 超声波 + SDM10 激光 → TCP JSON → 手机
+ *                 摄像板通过 WiFi STA 独立连接主控 AP，手机直连摄像板拉流
  * 依赖关系: Arduino Core、config.h、所有模块驱动、task_manager
  * 接口说明: 标准 Arduino setup()/loop()
  *
- * 启动流程 (v3.0: 容错设计):
+ * 系统架构 (v3.0):
+ *   ┌──────────────────┐   TCP:8888 JSON     ┌──────────────┐
+ *   │  ESP32_Main 主控  │ ◄──────────────────► │  手机 App     │
+ *   │  HC-SR04 + SDM10  │   传感器数据+命令    │              │
+ *   │  WiFi AP 热点     │                     │ 传感器显示    │
+ *   └────────┬─────────┘                     │ HC-SR04雷达图 │
+ *            │ WiFi AP                       │ 激光距离      │
+ *   ┌────────┴─────────┐                     │ AI处理画面    │
+ *   │  ESP32_Camera     │                     │ 原始画面      │
+ *   │  OV2640 + WiFi    │ ◄── HTTP 拉流 ─── │              │
+ *   │  STA 连主控AP     │   /video /capture  └──────────────┘
+ *   └──────────────────┘
+ *
+ * 启动流程 (v3.0: 精简):
  *   上电 -> RGB亮蓝 -> 蜂鸣器短响
- *        -> 初始化三路UART传感器(先于SPI,避免资源冲突)
+ *        -> 初始化传感器UART (SDM10激光)
+ *        -> 初始化HC-SR04超声波 (GPIO直连)
  *        -> 传感器自检(失败仅闪烁告警,不阻塞)
- *        -> 初始化SPI(后于UART,避免DMA冲突)
- *        -> 启动WiFi AP(无论传感器/SPI是否在线,必须启动)
- *        -> 创建FreeRTOS任务(各任务独立检查硬件状态)
+ *        -> 启动WiFi AP(无论传感器是否在线,必须启动)
+ *        -> 启动TCP服务器
+ *        -> 创建FreeRTOS任务(4个)
  *
  * 硬件: ESP32-S3-N16R8
  * 编译: Arduino IDE, 选择 "ESP32S3 Dev Module",
  *       开启 "USB CDC On Boot",
  *       Flash Size=16MB, PSRAM=OPI 8MB
  *
- * 容错原则: 传感器故障/摄像头离线不影响WiFi热点和手机连接
+ * 容错原则: 传感器故障不影响WiFi热点和手机连接
  * ============================================================ */
 
 #include <Arduino.h>
@@ -31,17 +46,13 @@
 TaskManager g_tm;
 
 /* 模块在线状态(供任务检查) */
-static bool g_spiOnline    = false;
-static bool g_laserOnline  = false;
-static bool g_radarFOnline = false;
-static bool g_radarROnline = false;
+static bool g_laserOnline     = false;
+static bool g_ultrasonicOnline = false;
 
 /* ============================================================
  * setup - 系统初始化与启动流程
  *
- * 初始化顺序: 告警 -> UART传感器 -> 自检 -> SPI -> WiFi -> 任务
- * 关键: UART 必须在 SPI 之前初始化!
- *       SPIClass::begin() 可能占用 DMA 通道, 影响后续 UART 分配.
+ * 初始化顺序: 告警 -> UART传感器 -> GPIO传感器 -> 自检 -> WiFi -> 任务
  * ============================================================ */
 void setup()
 {
@@ -50,8 +61,10 @@ void setup()
     Serial.begin(DBG_BAUDRATE);
     delay(500);
     Serial.println();
-    Serial.println(F("==== BlindGuide HeadRing Boot ===="));
+    Serial.println(F("==== BlindGuide HeadRing Boot v3.0 ===="));
     Serial.println(F("MCU: ESP32-S3-N16R8"));
+    Serial.println(F("Sensors: SDM10(Laser) + HC-SR04(Ultrasonic)"));
+    Serial.println(F("Camera: Independent ESP32 via WiFi STA"));
 #endif
 
     /* ---- 2. 蜂鸣器 + RGB LED ---- */
@@ -72,17 +85,47 @@ void setup()
     }
 
     /* ============================================================
-     * 6. 传感器 UART 初始化 — [临时跳过, 专注测试图传]
-     *    TODO: 传感器就绪后取消注释, 恢复完整功能
+     * 6. SDM10 激光测距传感器 (UART1)
+     *    量程10m, 精度±5cm, 50Hz连续输出
      * ============================================================ */
-    Serial.println(F("[MAIN] ---- Sensor UART Init (SKIPPED for image test) ----"));
-    g_laserOnline  = false;
-    g_radarFOnline = false;
-    g_radarROnline = false;
-    Serial.println(F("[MAIN] Sensors bypassed — WiFi + SPI only"));
+    Serial.println(F("[MAIN] ---- Sensor Init ----"));
+
+    Serial.println(F("[MAIN] Initializing SDM10 Laser..."));
+    if (g_tm.laser().begin()) {
+        Serial.println(F("[MAIN] SDM10 UART1 init OK (460800bps)"));
+        if (g_tm.laser().selfTest()) {
+            g_laserOnline = true;
+            Serial.println(F("[MAIN] SDM10 self-test OK"));
+        } else {
+            Serial.println(F("[MAIN] SDM10 self-test FAIL (will retry in task)"));
+        }
+    } else {
+        Serial.println(F("[MAIN] SDM10 init FAIL"));
+    }
 
     /* ============================================================
-     * 7. WiFi AP 热点 — 必须在 SPI 之前! (WiFi需要DMA/中断资源)
+     * 7. HC-SR04 超声波传感器 (GPIO4/GPIO5)
+     *    量程2cm-400cm, 精度±3mm, 替代前方Rd-03D雷达
+     * ============================================================ */
+    Serial.println(F("[MAIN] Initializing HC-SR04 Ultrasonic..."));
+    if (g_tm.ultrasonic().begin(PIN_HCSR04_TRIG, PIN_HCSR04_ECHO)) {
+        /* 快速验证: 读取一次看是否超时 */
+        float testDist = g_tm.ultrasonic().readDistance();
+        if (testDist > 0) {
+            g_ultrasonicOnline = true;
+            Serial.printf("[MAIN] HC-SR04 init OK, test=%.2f m\n", testDist);
+        } else {
+            Serial.println(F("[MAIN] HC-SR04 init OK but no echo (will retry in task)"));
+        }
+    } else {
+        Serial.println(F("[MAIN] HC-SR04 init FAIL"));
+    }
+
+    /* ============================================================
+     * 8. WiFi AP 热点
+     *    手机 + 摄像板均连接此热点
+     *    主控IP: 192.168.4.1
+     *    摄像板静态IP: 192.168.4.10 (通过JSON告知手机)
      * ============================================================ */
     Serial.println(F("[MAIN] ---- WiFi AP ----"));
     if (!g_tm.wifi().startAP()) {
@@ -92,35 +135,21 @@ void setup()
     } else {
         Serial.printf("[MAIN] AP SSID=%s  IP=%s\n",
                       WIFI_AP_SSID, g_tm.wifi().getApIp().toString().c_str());
+        Serial.printf("[MAIN] Camera ESP32 expected at %s\n", CAMERA_ESP32_STATIC_IP);
     }
 
-    /* ---- 8. TCP/UDP 服务器 ---- */
+    /* ---- 9. TCP 服务器 (传感器JSON + 命令) ---- */
     g_tm.wifi().startTcpServer();
-    g_tm.wifi().startUdpServer();
-    Serial.printf("[MAIN] TCP:%d  UDP:%d\n", TCP_PORT, UDP_PORT);
+    Serial.printf("[MAIN] TCP server on port %d\n", TCP_PORT);
 
-    /* ---- 9. Web 配置服务器 ---- */
+    /* ---- 10. Web 配置服务器 ---- */
     g_tm.web().begin();
     Serial.println(F("[MAIN] Web server on port 80"));
 
     /* ============================================================
-     * 10. SPI 主机通信 (WiFi之后初始化, 避免DMA资源冲突)
-     *    摄像头板未连接时失败是正常的
+     * 11. 命令回调注册
+     *     处理手机App发来的控制命令
      * ============================================================ */
-    Serial.println(F("[MAIN] ---- SPI Init ----"));
-    if (g_tm.spi().begin()) {
-        Serial.println(F("[MAIN] SPI master init OK"));
-        if (g_tm.spi().selfTest()) {
-            g_spiOnline = true;
-            Serial.println(F("[MAIN] SPI self-test OK (camera connected)"));
-        } else {
-            Serial.println(F("[MAIN] SPI self-test: no camera (continuing)"));
-        }
-    } else {
-        Serial.println(F("[MAIN] SPI init FAIL (continuing without camera)"));
-    }
-
-    /* ---- 11. 命令回调 ---- */
     g_tm.wifi().setCommandCallback([](AppCommand_t cmd, const char* json, size_t len) {
 #ifdef DEBUG
         Serial.printf("[CMD] cmd=%d json=%.*s\n", cmd, (int)len, json);
@@ -132,29 +161,14 @@ void setup()
                 int mode = atoi(p + 7);
                 if (mode >= MODE_SENSOR_ONLY && mode <= MODE_DEBUG) {
                     g_tm.setWorkMode((WorkMode_t)mode);
+                    Serial.printf("[CMD] mode set to %d\n", mode);
                 }
             }
             break;
         }
         case CMD_SET_WARN:
             /* 运行时阈值暂用编译期常量, 此处仅日志 */
-            break;
-        case CMD_SET_IMG:
-            /* 图像参数转发(仅在SPI在线时) */
-            if (g_spiOnline) {
-                const char* resP = strstr(json, "\"res\":");
-                const char* qP   = strstr(json, "\"q\":");
-                if (resP) {
-                    uint8_t res = (uint8_t)atoi(resP + 6);
-                    uint8_t d[1] = {res};
-                    g_tm.spi().sendCommand(SPI_CMD_SET_RESOLUTION, d, 1);
-                }
-                if (qP) {
-                    uint8_t quality = (uint8_t)atoi(qP + 4);
-                    uint8_t d[1] = {quality};
-                    g_tm.spi().sendCommand(SPI_CMD_SET_QUALITY, d, 1);
-                }
-            }
+            Serial.printf("[CMD] warn params: %.*s\n", (int)len, json);
             break;
         case CMD_SET_BUZZER: {
             const char* onP = strstr(json, "\"on\":");
@@ -170,24 +184,24 @@ void setup()
             delay(500);
             ESP.restart();
             break;
-        case CMD_CALIBRATE:
-            if (g_laserOnline || g_radarFOnline) {
-                bool laserOk = g_tm.laser().selfTest();
-                bool radarOk = g_tm.radarFront().selfTest();
-                char rsp[128];
-                snprintf(rsp, sizeof(rsp),
-                    "{\"type\":\"status\",\"calibrate\":{\"laser\":%s,\"radar\":%s}}",
-                    laserOk ? "true" : "false", radarOk ? "true" : "false");
-                g_tm.wifi().sendSensorJson(rsp, strlen(rsp));
-            }
+        case CMD_CALIBRATE: {
+            bool laserOk = g_tm.laser().selfTest();
+            char rsp[128];
+            snprintf(rsp, sizeof(rsp),
+                "{\"type\":\"status\",\"calibrate\":{\"laser\":%s,\"ultrasonic\":true}}",
+                laserOk ? "true" : "false");
+            g_tm.wifi().sendSensorJson(rsp, strlen(rsp));
             break;
+        }
         case CMD_QUERY_STATUS: {
             char rsp[256];
             snprintf(rsp, sizeof(rsp),
-                "{\"type\":\"status\",\"mode\":%d,\"clients\":%u,\"uptime\":%lu}",
+                "{\"type\":\"status\",\"mode\":%d,\"clients\":%u,\"uptime\":%lu,"
+                "\"camera_ip\":\"%s\"}",
                 (int)g_tm.getWorkMode(),
                 g_tm.wifi().getClientCount(),
-                (unsigned long)millis());
+                (unsigned long)millis(),
+                CAMERA_ESP32_STATIC_IP);
             g_tm.wifi().sendSensorJson(rsp, strlen(rsp));
             break;
         }
@@ -196,12 +210,12 @@ void setup()
         }
     });
 
-    /* ---- 12. 创建 FreeRTOS 任务 (各任务内部检查硬件状态) ---- */
-    Serial.println(F("[MAIN] starting FreeRTOS tasks..."));
+    /* ---- 12. 创建 FreeRTOS 任务 (4个，各任务内部检查硬件状态) ---- */
+    Serial.println(F("[MAIN] Starting FreeRTOS tasks..."));
     if (!g_tm.startTasks()) {
         Serial.println(F("[MAIN] Task create FAIL!"));
     } else {
-        Serial.println(F("[MAIN] All tasks started"));
+        Serial.println(F("[MAIN] All 4 tasks started"));
     }
 
     /* ---- 13. 进入工作模式 ---- */
