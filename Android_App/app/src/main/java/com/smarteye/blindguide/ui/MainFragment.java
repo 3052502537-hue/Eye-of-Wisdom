@@ -168,6 +168,7 @@ public class MainFragment extends Fragment implements ObstacleAnalyzer.OnAnalysi
     /**
      * 标题点击处理
      * 连续点击5次激活开发者模式
+     * 修复：直接调用 Activity 的激活逻辑，避免双重计数
      */
     private void onTitleClick() {
         long now = System.currentTimeMillis();
@@ -178,10 +179,10 @@ public class MainFragment extends Fragment implements ObstacleAnalyzer.OnAnalysi
         lastTitleClickTime = now;
 
         if (titleClickCount >= AppConfig.DEBUG_ACTIVATE_CLICK_COUNT) {
-            if (activity != null) {
-                activity.onTitleClick();
-            }
             titleClickCount = 0;
+            if (activity != null) {
+                activity.activateDebugMode();
+            }
         }
     }
 

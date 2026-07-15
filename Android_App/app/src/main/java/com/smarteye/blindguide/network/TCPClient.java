@@ -60,6 +60,9 @@ public class TCPClient {
     private final AtomicBoolean isRunning = new AtomicBoolean(false);
     private final AtomicBoolean isConnected = new AtomicBoolean(false);
 
+    /** 心跳是否正在运行（防止重复启动导致线程泄露） */
+    private final AtomicBoolean isHeartbeatRunning = new AtomicBoolean(false);
+
     /** 线程池，避免阻塞主线程 */
     private final ExecutorService executor = Executors.newFixedThreadPool(2);
 
@@ -182,6 +185,7 @@ public class TCPClient {
     public void disconnect() {
         isRunning.set(false);
         isConnected.set(false);
+        isHeartbeatRunning.set(false);
         closeSocket();
         notifyStateChanged(STATE_DISCONNECTED, "已断开连接");
     }
@@ -228,8 +232,10 @@ public class TCPClient {
                 isConnected.set(true);
                 notifyStateChanged(STATE_CONNECTED, "连接成功");
 
-                // 启动心跳线程
-                executor.execute(this::heartbeatLoop);
+                // 启动心跳线程（防止重复启动导致线程泄露）
+                if (isHeartbeatRunning.compareAndSet(false, true)) {
+                    executor.execute(this::heartbeatLoop);
+                }
 
                 // 接收数据循环
                 receiveLoop();
@@ -300,6 +306,7 @@ public class TCPClient {
                 break;
             }
         }
+        isHeartbeatRunning.set(false);
     }
 
     /**

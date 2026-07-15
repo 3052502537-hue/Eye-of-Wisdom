@@ -59,6 +59,23 @@ public class VoiceControl {
     /** 自定义指令处理器映射表 */
     private final Map<String, VoiceCommandHandler> commandHandlers = new HashMap<>();
 
+    /** 模式变更回调（供外部同步 ObstacleAnalyzer 等组件） */
+    private ModeChangeListener modeChangeListener;
+
+    /**
+     * 模式变更监听器接口
+     */
+    public interface ModeChangeListener {
+        void onModeChanged(int newMode);
+    }
+
+    /**
+     * 设置模式变更监听器
+     */
+    public void setModeChangeListener(ModeChangeListener listener) {
+        this.modeChangeListener = listener;
+    }
+
     /**
      * 语音指令回调接口
      */
@@ -137,18 +154,21 @@ public class VoiceControl {
         // 切换到传感器模式
         registerCommand(CMD_SWITCH_SENSOR_MODE, args -> {
             AppConfig.getInstance().setCurrentMode(AppConfig.MODE_SENSOR_ONLY);
+            notifyModeChanged(AppConfig.MODE_SENSOR_ONLY);
             TTSManager.getInstance().speak("已切换到传感器模式", TTSManager.PRIORITY_MEDIUM);
         });
 
         // 切换到自动模式
         registerCommand(CMD_SWITCH_AUTO_MODE, args -> {
             AppConfig.getInstance().setCurrentMode(AppConfig.MODE_AUTO);
+            notifyModeChanged(AppConfig.MODE_AUTO);
             TTSManager.getInstance().speak("已切换到自动模式", TTSManager.PRIORITY_MEDIUM);
         });
 
         // 切换到风险播报模式
         registerCommand(CMD_SWITCH_RISK_MODE, args -> {
             AppConfig.getInstance().setCurrentMode(AppConfig.MODE_RISK_ONLY);
+            notifyModeChanged(AppConfig.MODE_RISK_ONLY);
             TTSManager.getInstance().speak("已切换到风险播报模式", TTSManager.PRIORITY_MEDIUM);
         });
 
@@ -378,6 +398,15 @@ public class VoiceControl {
      */
     public boolean isInitialized() {
         return isInitialized;
+    }
+
+    /**
+     * 通知外部监听器模式已变更
+     */
+    private void notifyModeChanged(int newMode) {
+        if (modeChangeListener != null) {
+            modeChangeListener.onModeChanged(newMode);
+        }
     }
 
     /**

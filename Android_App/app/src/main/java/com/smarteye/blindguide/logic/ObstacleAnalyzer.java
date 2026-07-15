@@ -55,6 +55,9 @@ public class ObstacleAnalyzer {
     /** 上次播报的风险等级（避免重复播报） */
     private int lastRiskLevel = AppConfig.RISK_SAFE;
 
+    /** 最近一次分析结果缓存（避免 getLastResult 重复计算） */
+    private AnalysisResult lastResult;
+
     /** 当前融合策略 */
     private ObstacleStrategy strategy;
 
@@ -418,6 +421,9 @@ public class ObstacleAnalyzer {
         if (result == null) {
             return;
         }
+        
+        // 缓存结果供 getLastResult() 使用
+        this.lastResult = result;
 
         // 风险等级变化检测
         if (result.riskLevel != lastRiskLevel) {
@@ -475,14 +481,11 @@ public class ObstacleAnalyzer {
     }
 
     /**
-     * 获取最近的分析结果
+     * 获取最近的分析结果（返回缓存，不重新计算）
      * @return 最近分析结果，无数据返回 null
      */
     public AnalysisResult getLastResult() {
-        if (strategy == null) {
-            return null;
-        }
-        return strategy.analyze(lastSensorData, lastVisionResult);
+        return lastResult;
     }
 
     /**

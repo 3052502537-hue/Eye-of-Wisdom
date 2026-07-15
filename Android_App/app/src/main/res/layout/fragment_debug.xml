@@ -125,7 +125,20 @@
                         android:layout_height="wrap_content"
                         android:text="等待..."
                         android:textSize="12sp"
-                        android:textColor="#90A4AE" />
+                        android:textColor="#90A4AE"
+                        android:layout_marginEnd="8dp" />
+
+                    <Button
+                        android:id="@+id/btn_http_camera"
+                        android:layout_width="wrap_content"
+                        android:layout_height="32dp"
+                        android:text="HTTP直连"
+                        android:textSize="11sp"
+                        android:textColor="#FFFFFF"
+                        android:backgroundTint="#1565C0"
+                        android:minWidth="0dp"
+                        android:paddingStart="10dp"
+                        android:paddingEnd="10dp" />
                 </LinearLayout>
 
                 <ImageView

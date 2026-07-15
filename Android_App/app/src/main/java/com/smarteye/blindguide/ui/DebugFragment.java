@@ -38,6 +38,7 @@ import com.smarteye.blindguide.R;
 import com.smarteye.blindguide.ai.TFLiteClassifier;
 import com.smarteye.blindguide.data.AppConfig;
 import com.smarteye.blindguide.logic.ObstacleAnalyzer;
+import com.smarteye.blindguide.network.CameraHttpClient;
 import com.smarteye.blindguide.network.Protocol;
 import com.smarteye.blindguide.network.UDPReceiver;
 
@@ -86,10 +87,19 @@ public class DebugFragment extends Fragment implements MainActivity.DebugDataLis
     private Button btnClearLog;
     private Button btnResetStats;
 
+    /** HTTP 摄像头直连按钮 */
+    private Button btnHttpCamera;
+
     // ==================== 状态数据 ====================
 
     /** MainActivity 引用 */
     private MainActivity activity;
+
+    /** HTTP 摄像头客户端 */
+    private CameraHttpClient httpCamera;
+
+    /** HTTP 摄像头是否正在运行 */
+    private boolean isHttpCameraRunning = false;
 
     /** 主线程 Handler */
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
@@ -159,6 +169,7 @@ public class DebugFragment extends Fragment implements MainActivity.DebugDataLis
         scrollLog = view.findViewById(R.id.scroll_log);
         btnClearLog = view.findViewById(R.id.btn_clear_log);
         btnResetStats = view.findViewById(R.id.btn_reset_stats);
+        btnHttpCamera = view.findViewById(R.id.btn_http_camera);
     }
 
     /**
@@ -178,6 +189,11 @@ public class DebugFragment extends Fragment implements MainActivity.DebugDataLis
                 appendLog("统计已重置");
             }
         });
+
+        // HTTP 摄像头直连按钮
+        if (btnHttpCamera != null) {
+            btnHttpCamera.setOnClickListener(v -> toggleHttpCamera());
+        }
     }
 
     @Override
@@ -205,6 +221,8 @@ public class DebugFragment extends Fragment implements MainActivity.DebugDataLis
         if (activity != null) {
             activity.removeDebugDataListener(this);
         }
+        // 停止 HTTP 摄像头
+        stopHttpCamera();
     }
 
     // ==================== DebugDataListener 接口实现 ====================
@@ -468,5 +486,81 @@ public class DebugFragment extends Fragment implements MainActivity.DebugDataLis
             // 滚动到底部
             scrollLog.post(() -> scrollLog.fullScroll(ScrollView.FOCUS_DOWN));
         });
+    }
+
+    // ==================== HTTP 摄像头直连 ====================
+
+    /**
+     * 切换 HTTP 摄像头开关
+     */
+    private void toggleHttpCamera() {
+        if (isHttpCameraRunning) {
+            stopHttpCamera();
+        } else {
+            startHttpCamera();
+        }
+    }
+
+    /**
+     * 启动 HTTP 摄像头直连
+     */
+    private void startHttpCamera() {
+        if (httpCamera == null) {
+            httpCamera = new CameraHttpClient();
+        }
+        // 设置 ESP32-S3-EYE 摄像头 MJPEG 流 URL
+        httpCamera.setStreamUrl("http://" + AppConfig.ESP32_HOST + "/video");
+        httpCamera.setOnFrameListener(new CameraHttpClient.OnFrameListener() {
+            @Override
+            public void onFrame(byte[] jpegData, int frameNumber, long fetchTimeMs) {
+                mainHandler.post(() -> {
+                    android.graphics.Bitmap bmp = BitmapFactory.decodeByteArray(
+                            jpegData, 0, jpegData.length);
+                    if (bmp != null) {
+                        imageRawVideo.setImageBitmap(bmp);
+                        textRawVideoInfo.setText(String.format("%dx%d | HTTP直连 %dKB | %dms",
+                                bmp.getWidth(), bmp.getHeight(),
+                                jpegData.length / 1024, fetchTimeMs));
+                    }
+                });
+            }
+
+            @Override
+            public void onError(String error) {
+                appendLog("HTTP摄像头: " + error);
+            }
+
+            @Override
+            public void onStateChanged(boolean connected, String message) {
+                // 状态变化记录日志
+            }
+        });
+        httpCamera.start();
+        isHttpCameraRunning = true;
+        updateHttpButtonState();
+        appendLog("HTTP摄像头直连已开启 → http://" + AppConfig.ESP32_HOST + "/video");
+    }
+
+    /**
+     * 停止 HTTP 摄像头直连
+     */
+    private void stopHttpCamera() {
+        if (httpCamera != null) {
+            httpCamera.stop();
+        }
+        isHttpCameraRunning = false;
+        updateHttpButtonState();
+    }
+
+    /**
+     * 更新 HTTP 按钮文字和颜色
+     */
+    private void updateHttpButtonState() {
+        if (btnHttpCamera != null) {
+            btnHttpCamera.setText(isHttpCameraRunning ? "关闭HTTP" : "HTTP直连");
+            btnHttpCamera.setBackgroundTintList(
+                    android.content.res.ColorStateList.valueOf(
+                            isHttpCameraRunning ? 0xFF4CAF50 : 0xFF1565C0));
+        }
     }
 }

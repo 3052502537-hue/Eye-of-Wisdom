@@ -77,12 +77,6 @@ public class MainActivity extends AppCompatActivity {
     /** 当前显示的 Fragment */
     private Fragment currentFragment;
 
-    /** 标题点击计数（调试模式激活） */
-    private int titleClickCount = 0;
-
-    /** 标题上次点击时间 */
-    private long lastTitleClickTime = 0;
-
     /** 权限请求启动器 */
     private ActivityResultLauncher<String[]> permissionLauncher;
 
@@ -201,6 +195,12 @@ public class MainActivity extends AppCompatActivity {
         // 初始化语音控制（可选）
         voiceControl = new VoiceControl();
         voiceControl.initialize(this);
+        // 语音切换模式时同步更新 ObstacleAnalyzer
+        voiceControl.setModeChangeListener(mode -> {
+            if (analyzer != null) {
+                analyzer.setMode(mode);
+            }
+        });
 
         // 设置 TCP 数据回调（使用 add 而非 set，避免覆盖其他监听器）
         tcpClient.addOnSensorDataListener(new TCPClient.OnSensorDataListener() {
@@ -336,25 +336,13 @@ public class MainActivity extends AppCompatActivity {
     }
 
     /**
-     * 激活调试模式
-     * 连续点击主界面标题5次
+     * 激活调试模式（由 MainFragment 计数完成后调用）
      */
-    public void onTitleClick() {
-        long now = System.currentTimeMillis();
-        if (now - lastTitleClickTime > 2000) {
-            // 超过2秒重置计数
-            titleClickCount = 0;
-        }
-        titleClickCount++;
-        lastTitleClickTime = now;
-
-        if (titleClickCount >= AppConfig.DEBUG_ACTIVATE_CLICK_COUNT) {
-            AppConfig.getInstance().setDebugModeActivated(true);
-            updateDebugNavVisibility();
-            Toast.makeText(this, "开发者模式已激活", Toast.LENGTH_SHORT).show();
-            TTSManager.getInstance().speak("开发者模式已激活", TTSManager.PRIORITY_MEDIUM);
-            titleClickCount = 0;
-        }
+    public void activateDebugMode() {
+        AppConfig.getInstance().setDebugModeActivated(true);
+        updateDebugNavVisibility();
+        Toast.makeText(this, "开发者模式已激活", Toast.LENGTH_SHORT).show();
+        TTSManager.getInstance().speak("开发者模式已激活", TTSManager.PRIORITY_MEDIUM);
     }
 
     // ==================== Getter 方法（供 Fragment 访问）====================
@@ -440,13 +428,8 @@ public class MainActivity extends AppCompatActivity {
     @Override
     protected void onPause() {
         super.onPause();
-        // 暂停网络通信，节省电量
-        if (tcpClient != null) {
-            tcpClient.disconnect();
-        }
-        if (udpReceiver != null) {
-            udpReceiver.stopReceive();
-        }
+        // 导盲头环需要持续接收传感器数据，onPause 不主动断开连接
+        // 仅在 onDestroy 时释放所有资源
     }
 
     @Override
